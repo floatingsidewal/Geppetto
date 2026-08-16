@@ -1,0 +1,116 @@
+# ---------------------------------------------------------------------------
+# Project runtime data
+# ---------------------------------------------------------------------------
+outputs/
+models/
+inputs/*
+!inputs/.gitkeep
+
+# Generated 3D assets, renders and HDRIs (large binaries — never commit)
+*.glb
+*.gltf
+*.ply
+*.obj
+*.fbx
+*.usdz
+*.mp4
+*.exr
+*.hdr
+
+# Model weights / checkpoints
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.onnx
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.token
+hf_token*
+
+# Benchmark / job artifacts
+benchmark-*.json
+benchmark-*.md
+job-*.json
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+docker-compose.override.yml
+
+# ---------------------------------------------------------------------------
+# Editors / IDEs
+# ---------------------------------------------------------------------------
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# ---------------------------------------------------------------------------
+# macOS
+# ---------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.DocumentRevisions-V100
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.apdisk
+Icon?
+
+# ---------------------------------------------------------------------------
+# Windows
+# ---------------------------------------------------------------------------
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.stackdump
+*.lnk
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# ---------------------------------------------------------------------------
+# Linux
+# ---------------------------------------------------------------------------
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*

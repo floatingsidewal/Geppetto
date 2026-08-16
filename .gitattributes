@@ -1,0 +1,7 @@
+# Everything text is LF — these files are consumed inside Linux containers.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.glb binary
+*.mp4 binary
+*.exr binary

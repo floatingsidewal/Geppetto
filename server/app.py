@@ -1,0 +1,193 @@
+"""FastAPI front end for TRELLIS.2 image -> 3D inference.
+
+Submit an image, get a job id, poll it, download the GLB. All GPU work is
+serialized behind a single worker thread (see worker.py).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import uuid
+from contextlib import asynccontextmanager
+from io import BytesIO
+from pathlib import Path
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+
+from schemas import GenerateParams, Health, Job, JobCreated, JobStatus
+from worker import MODEL_ID, OUTPUT_DIR, engine
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+)
+log = logging.getLogger("trellis2.api")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    engine.start()
+    yield
+    engine.shutdown()
+
+
+app = FastAPI(
+    title="TRELLIS.2 Inference API",
+    version="1.0.0",
+    description=(
+        "Single image -> textured 3D asset (GLB with PBR materials), powered by "
+        "microsoft/TRELLIS.2-4B. Research/evaluation deployment."
+    ),
+    lifespan=lifespan,
+)
+
+
+def _gpu_info() -> dict:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return {"torch_version": torch.__version__}
+        free, total = torch.cuda.mem_get_info()
+        return {
+            "torch_version": torch.__version__,
+            "gpu_name": torch.cuda.get_device_name(0),
+            "gpu_total_gb": round(total / 1024**3, 1),
+            "gpu_free_gb": round(free / 1024**3, 1),
+        }
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+@app.get("/", include_in_schema=False)
+def root() -> dict:
+    return {
+        "service": "trellis2-infer",
+        "model": MODEL_ID,
+        "docs": "/docs",
+        "health": "/healthz",
+        "submit": "POST /v1/generate",
+    }
+
+
+@app.get("/healthz", response_model=Health)
+def healthz() -> Health:
+    stats = engine.stats()
+    if engine.load_error:
+        status = "unhealthy"
+    elif engine.loaded.is_set():
+        status = "healthy"
+    else:
+        status = "starting"
+    return Health(
+        status=status,
+        model=MODEL_ID,
+        model_loaded=engine.loaded.is_set(),
+        load_error=engine.load_error,
+        **_gpu_info(),
+        **stats,
+    )
+
+
+@app.post("/v1/generate", response_model=JobCreated, status_code=202)
+async def generate(
+    image: UploadFile = File(..., description="Input image (PNG/JPEG/WebP; RGBA respected)."),
+    params: str | None = Form(
+        None,
+        description='JSON object of generation parameters, e.g. {"resolution":512,"preview_video":true}',
+    ),
+) -> JobCreated:
+    if engine.load_error:
+        raise HTTPException(503, f"Model failed to load: {engine.load_error}")
+
+    try:
+        parsed = GenerateParams.model_validate(json.loads(params)) if params else GenerateParams()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(422, f"`params` is not valid JSON: {exc}") from exc
+    except Exception as exc:  # pydantic ValidationError
+        raise HTTPException(422, f"Invalid parameters: {exc}") from exc
+
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(400, "Empty upload.")
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        img = Image.open(BytesIO(raw))
+        img.load()
+    except UnidentifiedImageError as exc:
+        raise HTTPException(400, "Could not decode the uploaded file as an image.") from exc
+
+    # Normalize to RGBA PNG on disk: the pipeline's preprocessor expects to be
+    # able to read an alpha channel when preprocess_image is disabled.
+    img = img.convert("RGBA")
+
+    job_id = uuid.uuid4().hex[:12]
+    workdir = OUTPUT_DIR / job_id
+    workdir.mkdir(parents=True, exist_ok=True)
+    img.save(workdir / "input.png")
+
+    job = engine.submit(job_id, parsed, image.filename)
+    log.info(
+        "Queued job %s (%s, %s^3, seed=%s)",
+        job_id,
+        image.filename,
+        parsed.resolution,
+        "random" if parsed.randomize_seed else parsed.seed,
+    )
+    return JobCreated(
+        job_id=job_id,
+        status=job.status,
+        queue_position=job.queue_position or 0,
+        poll=f"/v1/jobs/{job_id}",
+    )
+
+
+@app.get("/v1/jobs", response_model=list[Job])
+def list_jobs(limit: int = 100) -> list[Job]:
+    return engine.list_jobs(limit=limit)
+
+
+@app.get("/v1/jobs/{job_id}", response_model=Job)
+def get_job(job_id: str) -> Job:
+    job = engine.get(job_id)
+    if job is None:
+        raise HTTPException(404, "No such job.")
+    return job
+
+
+@app.delete("/v1/jobs/{job_id}")
+def delete_job(job_id: str) -> JSONResponse:
+    if not engine.forget(job_id):
+        raise HTTPException(404, "No such job.")
+    return JSONResponse({"deleted": job_id})
+
+
+def _artifact(job_id: str, filename: str, media_type: str) -> FileResponse:
+    job = engine.get(job_id)
+    if job is None:
+        raise HTTPException(404, "No such job.")
+    path = OUTPUT_DIR / job_id / filename
+    if not path.exists():
+        detail = job.error or f"Job is {job.status.value}; {filename} is not available."
+        raise HTTPException(404, detail)
+    return FileResponse(path, media_type=media_type, filename=f"{job_id}-{filename}")
+
+
+@app.get("/v1/jobs/{job_id}/asset.glb")
+def get_glb(job_id: str) -> FileResponse:
+    return _artifact(job_id, "asset.glb", "model/gltf-binary")
+
+
+@app.get("/v1/jobs/{job_id}/preview.mp4")
+def get_preview(job_id: str) -> FileResponse:
+    return _artifact(job_id, "preview.mp4", "video/mp4")
+
+
+@app.get("/v1/jobs/{job_id}/input.png")
+def get_input(job_id: str) -> FileResponse:
+    return _artifact(job_id, "input.png", "image/png")

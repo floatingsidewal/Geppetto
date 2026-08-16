@@ -1,0 +1,105 @@
+name: trellis2
+
+# ---------------------------------------------------------------------------
+# Default profile brings up the REST API only.
+#   docker compose up -d                    # API on :${API_PORT}
+#   docker compose --profile ui up -d       # + upstream Gradio demo on :${UI_PORT}
+#
+# The UI is a separate service from the same image so it can be started only
+# when wanted — running both loads two copies of a 4B model (fine in 48 GB,
+# but wasteful).
+# ---------------------------------------------------------------------------
+
+x-trellis2-common: &trellis2-common
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: trellis2-infer:latest
+  environment: &trellis2-env
+    HF_HOME: /models
+    HF_TOKEN: ${HF_TOKEN:-}
+    HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    # Set to "xformers" if the flash-attn build is unusable on this GPU.
+    ATTN_BACKEND: ${ATTN_BACKEND:-flash-attn}
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    OPENCV_IO_ENABLE_OPENEXR: "1"
+    NVIDIA_DRIVER_CAPABILITIES: all
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  volumes:
+    - models:/models
+    - ./outputs:/outputs
+    - ./inputs:/inputs:ro
+  shm_size: "16gb"
+  ipc: host
+  restart: unless-stopped
+
+services:
+  # --- REST API, pinned to one GPU ----------------------------------------
+  api:
+    <<: *trellis2-common
+    container_name: trellis2-api
+    ports:
+      - "${API_PORT:-8080}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_ID:-1}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      # First start loads ~16 GB of weights; do not flap during that.
+      start_period: 15m
+      retries: 3
+
+  # --- Upstream Gradio demo (opt-in) --------------------------------------
+  ui:
+    <<: *trellis2-common
+    container_name: trellis2-ui
+    profiles: ["ui"]
+    working_dir: /opt/TRELLIS.2
+    environment:
+      <<: *trellis2-env
+      GRADIO_SERVER_NAME: "0.0.0.0"
+      GRADIO_SERVER_PORT: "7860"
+    command: ["python", "app.py"]
+    ports:
+      - "${UI_PORT:-7860}:7860"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_ID:-1}"]
+              capabilities: [gpu]
+
+  # --- Scale-out: second worker on the other GPU (opt-in) ------------------
+  # Enable with:  docker compose --profile scale up -d
+  # Then round-robin your client between ${API_PORT} and ${API_PORT_2}, or put
+  # a least-connections proxy in front of both.
+  api2:
+    <<: *trellis2-common
+    container_name: trellis2-api2
+    profiles: ["scale"]
+    ports:
+      - "${API_PORT_2:-8081}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_ID_2:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15m
+      retries: 3
+
+volumes:
+  models:
+    name: trellis2-models
