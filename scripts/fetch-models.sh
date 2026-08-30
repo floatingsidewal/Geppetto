@@ -26,7 +26,9 @@ docker image inspect trellis2-infer:latest >/dev/null 2>&1 \
 
 log "Downloading weights into the trellis2-models volume"
 
-docker run --rm \
+# -i is load-bearing: the program below arrives on stdin, and without it
+# `python -` reads EOF, runs nothing, and exits 0 — a silent no-download.
+docker run --rm -i \
   -e HF_TOKEN="$HF_TOKEN" \
   -e HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
   -e HF_HOME=/models \

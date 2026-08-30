@@ -63,25 +63,69 @@ ENV CUDA_HOME=/usr/local/cuda \
     TORCH_CUDA_ARCH_LIST=${CUDA_ARCH} \
     MAX_JOBS=${MAX_JOBS}
 
+# --- Build-time nvidia-smi stub --------------------------------------------
+# setup.sh picks its platform with `command -v nvidia-smi` and aborts with
+# "No supported GPU found" otherwise. The GPU is only present at run time, not
+# during `docker build`, so every setup.sh layer would fail. The stub lives in
+# its own directory and is prepended to PATH per-RUN, never at runtime — the
+# NVIDIA container runtime injects the real nvidia-smi into /usr/bin, and this
+# must not shadow or collide with it.
+RUN mkdir -p /opt/buildstub \
+ && echo '#!/bin/sh' > /opt/buildstub/nvidia-smi \
+ && echo 'echo "stub nvidia-smi (build only)"' >> /opt/buildstub/nvidia-smi \
+ && chmod +x /opt/buildstub/nvidia-smi
+
 # --- Base Python dependencies (upstream `--basic`) -------------------------
 # pillow-simd is a drop-in speed optimization that frequently fails to compile;
 # pre-satisfying the requirement lets setup.sh's own `pip install pillow-simd`
 # no-op instead of aborting the layer.
 RUN pip install pillow-simd || pip install "pillow>=10.4,<12"
 RUN apt-get update \
- && bash setup.sh --basic \
+ && PATH=/opt/buildstub:$PATH bash setup.sh --basic \
  && rm -rf /var/lib/apt/lists/*
 
 # --- CUDA extensions, one layer each ---------------------------------------
-# flash-attn tries a prebuilt wheel matching torch2.6/cu12/cp310 first and
-# falls back to a source build (slow but functional). If it fails outright,
-# run the container with ATTN_BACKEND=xformers.
-RUN bash setup.sh --flash-attn
-RUN bash setup.sh --nvdiffrast
-RUN bash setup.sh --nvdiffrec
-RUN bash setup.sh --cumesh
-RUN bash setup.sh --flexgemm
-RUN bash setup.sh --o-voxel
+# Upstream's flash-attn line is `pip install flash-attn==2.7.3` with no
+# --no-build-isolation, so its build env has no torch and metadata generation
+# dies with ModuleNotFoundError. pip swallows that into a zero exit, so the
+# layer "succeeds" with nothing installed. It is left here to mirror upstream;
+# the real install is the explicit layer after the extensions, which is also
+# where the failure becomes loud.
+RUN PATH=/opt/buildstub:$PATH bash setup.sh --flash-attn
+RUN PATH=/opt/buildstub:$PATH bash setup.sh --nvdiffrast
+RUN PATH=/opt/buildstub:$PATH bash setup.sh --nvdiffrec
+RUN PATH=/opt/buildstub:$PATH bash setup.sh --cumesh
+RUN PATH=/opt/buildstub:$PATH bash setup.sh --flexgemm
+RUN PATH=/opt/buildstub:$PATH bash setup.sh --o-voxel
+
+# --- flash-attn (the install that actually works) --------------------------
+# Prebuilt wheel matching this exact stack (cp310 / torch 2.6 / cu12 / pre-2.7
+# cxx11 ABI). Falls back to a source build with --no-build-isolation, which is
+# correct but slow. The import check makes a silent no-op impossible: if
+# flash-attn is missing, the build stops here instead of at first inference.
+ARG FLASH_ATTN_WHEEL=https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.3/flash_attn-2.7.3+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+RUN pip install "${FLASH_ATTN_WHEEL}" \
+ || pip install flash-attn==2.7.3 --no-build-isolation \
+ ; python -c "import flash_attn; print('flash-attn', flash_attn.__version__)"
+
+# --- Pillow: drop pillow-simd -----------------------------------------------
+# pillow-simd is stuck at 9.5 and its WebP plugin is broken against modern
+# libwebp — `PIL._webp` has no HAVE_WEBPANIM, so *importing* the plugin throws
+# and every WebP upload 500s. Its SIMD speedup is irrelevant here (decode is
+# microseconds next to a 60s generation), so stock Pillow wins on correctness.
+# Done late so the expensive extension layers stay cached.
+RUN pip uninstall -y pillow-simd pillow >/dev/null 2>&1 || true
+RUN pip install --no-cache-dir "pillow>=10.4,<12" \
+ && python -c "from PIL import Image, features; assert features.check('webp'), 'webp support missing'; print('pillow', Image.__version__, 'webp ok')"
+
+# --- transformers: pin to the DINOv3 layout upstream was written against ----
+# setup.sh installs transformers unpinned. trellis2/modules/image_feature_extractor.py
+# iterates `self.model.layer`, which is the 4.56 DINOv3ViTModel layout; in 5.x
+# the blocks moved into a nested DINOv3ViTEncoder and every generation dies with
+# "'DINOv3ViTModel' object has no attribute 'layer'". The assertion turns a
+# future version drift into a build failure instead of a runtime one.
+RUN pip install --no-cache-dir "transformers==4.56.2" \
+ && python -c "from transformers.models.dinov3_vit.modeling_dinov3_vit import DINOv3ViTModel; import inspect; assert 'self.layer' in inspect.getsource(DINOv3ViTModel.__init__), 'DINOv3ViTModel.layer missing — image_feature_extractor.py will fail'; print('transformers pinned, DINOv3 layout ok')"
 
 # --- Inference service -----------------------------------------------------
 COPY server/requirements.txt /opt/server/requirements.txt
