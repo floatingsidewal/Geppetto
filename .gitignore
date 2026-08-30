@@ -116,10 +116,8 @@ $RECYCLE.BIN/
 .Trash-*
 .nfs*
 
-# Test artwork that is not ours to publish: the statue comparison derives from a
-# watermarked stock photo, and the Pinocchio images are a colourised version of
-# Mazzanti's 1883 illustration whose colourisation may carry its own claim.
-# Useful locally for testing; not for a public repo.
+# Local test artwork whose provenance is unresolved. The Pinocchio images are a
+# colourised version of Mazzanti's 1883 illustration; the colourisation may
+# carry its own claim. Useful locally; not published.
 docs/images/
-docs/test-statue.png
 docs/hero-pinocchio.png
