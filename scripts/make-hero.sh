@@ -13,7 +13,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 REUSE=false
-if [[ "${1:-}" == "--reuse" ]]; then REUSE=true; shift; fi
+# Seconds into the turntable to grab. The camera orbits, so this chooses the
+# viewing angle: 0 is the front, matching how the subject was photographed;
+# later values swing round to the back, which rarely flatters a banner.
+AT="${GEPPETTO_HERO_AT:-0}"
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --reuse) REUSE=true; shift ;;
+    --at)    AT="$2"; shift 2 ;;
+    *) echo "unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
 
 IMAGE_IN="${1:-inputs/example-0a34fa.webp}"
 OUT="${2:-docs/hero.png}"
@@ -40,16 +50,17 @@ log "Composing the banner"
 # producing no image at all.
 docker run --rm -i \
   -v "$PWD/outputs/hero:/work" -v "$PWD/$(dirname "$IMAGE_IN"):/src:ro" -v "$PWD/docs:/docs" \
-  "$GEPPETTO_IMAGE" python - "$stem" "$(basename "$IMAGE_IN")" "$(basename "$OUT")" <<'PY'
+  "$GEPPETTO_IMAGE" python - "$stem" "$(basename "$IMAGE_IN")" "$(basename "$OUT")" "$AT" <<'PY'
 import subprocess, sys
 from PIL import Image, ImageChops
 
 stem, src_name, out_name = sys.argv[1], sys.argv[2], sys.argv[3]
+at = sys.argv[4] if len(sys.argv) > 4 else "0"
 
-# One representative frame from the turntable — a few seconds in, so the model
-# is at an informative angle rather than dead-on.
+# One frame from the turntable. `--at` selects the viewing angle, since the
+# camera orbits the model over the clip.
 subprocess.run(
-    ["ffmpeg", "-y", "-loglevel", "error", "-ss", "2", "-i", f"/work/{stem}.mp4",
+    ["ffmpeg", "-y", "-loglevel", "error", "-ss", at, "-i", f"/work/{stem}.mp4",
      "-frames:v", "1", "/work/frame.png"],
     check=True,
 )

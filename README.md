@@ -321,8 +321,9 @@ Drag an image in, choose detail and which formats you want, and press **Make it 
 
 ![A painted statue of Geppetto and Pinocchio on a bench, and the 3D model reconstructed from that single photograph](docs/test-statue.png)
 
-*A harder case: two figures, a bench and a park background. Both figures, their poses and the bench
-all survive — this is the kind of input the model is built for.*
+*A harder case: two figures, a bench, tools and jointed limbs, all reconstructed from one photograph.
+This one was run with `--no-preprocess` on a pre-cut RGBA image, which skips background removal
+entirely — faster, more predictable, and it never loads the non-commercial RMBG-2.0 weights.*
 
 TRELLIS.2 infers three dimensions from the depth cues in a photograph: shading, occlusion,
 perspective, the way light falls across a surface. That shapes what works.
