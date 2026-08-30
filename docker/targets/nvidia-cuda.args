@@ -1,0 +1,18 @@
+# Geppetto build target: nvidia-cuda
+#
+# x86_64 + NVIDIA Ada (sm_89): RTX 6000 Ada, RTX 4090, L40S.
+# STATUS: verified end to end — 1024^3 in 109-188s at 4.5-6.2 GB peak VRAM,
+#         1536^3/4096 in 300s at 11.3 GB, on an RTX 6000 Ada.
+#
+# To target a different NVIDIA generation, change CUDA_ARCH and rebuild the
+# extension layers (Ampere 8.6, Ada 8.9, Hopper 9.0, Blackwell 12.0/12.1).
+BASE_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04
+CUDA_ARCH=8.9
+PYTHON_VERSION=3.10
+TORCH_SPEC=torch==2.6.0 torchvision==0.21.0
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+ATTN_PACKAGE=https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.3/flash_attn-2.7.3+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+ATTN_PACKAGE_FALLBACK=flash-attn==2.7.3
+ATTN_IMPORT=flash_attn
+DEFAULT_ATTN_BACKEND=flash_attn
+GEPPETTO_TARGET=nvidia-cuda

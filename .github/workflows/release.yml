@@ -1,0 +1,168 @@
+name: Release containers
+
+# Two images, built natively on the hardware each one targets:
+#
+#   nvidia-cuda  x86_64 / sm_89   -> self-hosted runner labelled 'ark'
+#   dgx-spark    aarch64 / sm_121 -> self-hosted runner labelled 'dgx-spark'
+#
+# Cross-building these CUDA extensions under emulation is not practical, and a
+# GPU-less hosted runner could not smoke-test the result. Self-hosted runners
+# give both native builds and a real GPU to verify against, for no billed
+# minutes on a private repo.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to publish (e.g. v1.0.0)'
+        required: true
+      targets:
+        description: 'Which targets to build'
+        required: true
+        default: 'both'
+        type: choice
+        options: [both, nvidia-cuda, dgx-spark]
+      full_smoke_test:
+        description: 'Run a real generation before publishing (slower, needs weights)'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/geppetto
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false          # one target failing must not cancel the other
+      matrix:
+        include:
+          - target: nvidia-cuda
+            runner: ark
+            # Verified on an RTX 6000 Ada. A failure here should block release.
+            required: true
+          - target: dgx-spark
+            runner: dgx-spark
+            # UNVERIFIED on real hardware. Reported, not release-blocking, until
+            # it has generated a mesh on a DGX Spark at least once. Flip this to
+            # true once it has — an unverified target must never fail silently,
+            # but it also must not hold back the target that does work.
+            required: false
+
+    name: ${{ matrix.target }}
+    runs-on: [self-hosted, "${{ matrix.runner }}"]
+    continue-on-error: ${{ !matrix.required }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Skip unselected target
+        id: gate
+        run: |
+          want='${{ github.event.inputs.targets || 'both' }}'
+          if [[ "$want" != "both" && "$want" != "${{ matrix.target }}" ]]; then
+            echo "selected=false" >> "$GITHUB_OUTPUT"
+            echo "Not selected for this run."
+          else
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.selected == 'true'
+
+      - name: Resolve version
+        if: steps.gate.outputs.selected == 'true'
+        id: version
+        run: |
+          v='${{ github.event.inputs.version }}'
+          [[ -n "$v" ]] || v="${GITHUB_REF#refs/tags/}"
+          [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::Not a semver tag: $v"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Publishing as ${{ matrix.target }}-$v"
+
+      - name: Confirm host architecture
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          # A mislabelled runner would otherwise burn a long build producing an
+          # image for the wrong machine.
+          case "${{ matrix.target }}" in
+            nvidia-cuda) want=x86_64 ;;
+            dgx-spark)   want=aarch64 ;;
+          esac
+          got="$(uname -m)"
+          [[ "$got" == "$want" ]] || { echo "::error::Runner '${{ matrix.runner }}' is $got, expected $want for ${{ matrix.target }}"; exit 1; }
+          nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv,noheader
+
+      - name: Build
+        if: steps.gate.outputs.selected == 'true'
+        run: bash scripts/build.sh ${{ matrix.target }} --tag geppetto:${{ matrix.target }}
+
+      - name: Smoke test
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          if [[ '${{ github.event.inputs.full_smoke_test }}' == 'false' ]]; then
+            bash scripts/smoke-test.sh geppetto:${{ matrix.target }}
+          else
+            bash scripts/smoke-test.sh geppetto:${{ matrix.target }} --full
+          fi
+
+      - name: Log in to GHCR
+        if: steps.gate.outputs.selected == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          base="${REGISTRY}/${IMAGE_NAME}"
+          base="${base,,}"                       # GHCR requires a lowercase path
+          v='${{ steps.version.outputs.version }}'
+          for tag in "${{ matrix.target }}-${v}" "${{ matrix.target }}-latest"; do
+            docker tag geppetto:${{ matrix.target }} "${base}:${tag}"
+            docker push "${base}:${tag}"
+            echo "pushed ${base}:${tag}"
+          done
+          echo "### \`${base}:${{ matrix.target }}-${v}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest       # trivial step; no need to occupy a GPU box
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v="${GITHUB_REF#refs/tags/}"
+          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          cat > notes.md <<EOF
+          ## Geppetto ${v}
+
+          Image-to-3D inference service. A picture goes in; a textured GLB and a
+          printable STL come out.
+
+          ### Containers
+
+          \`\`\`
+          docker pull ghcr.io/${owner_lc}/geppetto:nvidia-cuda-${v}   # x86_64 / sm_89  — verified
+          docker pull ghcr.io/${owner_lc}/geppetto:dgx-spark-${v}     # aarch64 / sm_121 — see caveats
+          \`\`\`
+
+          The \`dgx-spark\` image is published only when its build and smoke test
+          pass on real GB10 hardware; if it is absent from this release, that
+          target did not pass.
+
+          Weights are not baked in — run \`scripts/fetch-models.sh\` once (~21 GB).
+          EOF
+          gh release create "$v" --title "Geppetto $v" --notes-file notes.md

@@ -21,8 +21,12 @@ set -a; . ./.env; set +a
 
 [[ -n "${HF_TOKEN:-}" ]] || die "HF_TOKEN is empty in .env. See the comments in .env.example."
 
-docker image inspect trellis2-infer:latest >/dev/null 2>&1 \
-  || die "Image trellis2-infer:latest not found. Build it first: docker compose build"
+# Any Geppetto image can do the downloading — it only needs huggingface_hub —
+# so this works the same on either build target.
+IMAGE="${GEPPETTO_IMAGE:-geppetto:nvidia-cuda}"
+docker image inspect "$IMAGE" >/dev/null 2>&1 \
+  || die "Image $IMAGE not found. Build it first: bash scripts/build.sh <target>
+(or set GEPPETTO_IMAGE to a published one, e.g. ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest)"
 
 log "Downloading weights into the trellis2-models volume"
 
@@ -33,7 +37,7 @@ docker run --rm -i \
   -e HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
   -e HF_HOME=/models \
   -v trellis2-models:/models \
-  trellis2-infer:latest \
+  "$IMAGE" \
   python - <<'PY'
 import sys
 from huggingface_hub import HfApi, snapshot_download

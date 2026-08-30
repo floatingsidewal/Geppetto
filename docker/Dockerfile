@@ -1,21 +1,36 @@
 # syntax=docker/dockerfile:1.7
 # ---------------------------------------------------------------------------
-# TRELLIS.2 inference image
+# Geppetto — TRELLIS.2 inference image
 #
-# Mirrors upstream setup.sh exactly, but layer-by-layer so a failing extension
-# does not invalidate the whole build cache. Ubuntu 22.04 already ships
-# Python 3.10, which is what upstream's `--new-env` creates, so a plain venv
-# replaces conda.
+# One Dockerfile, two release targets. Everything that differs between them is
+# an ARG, so the targets cannot silently drift apart:
+#
+#   nvidia-cuda  x86_64 / sm_89  / CUDA 12.4 / torch 2.6+cu124  (verified)
+#   dgx-spark    aarch64 / sm_121 / CUDA 13  / torch cu130      (UNVERIFIED)
+#
+# Build args for each live in docker/targets/*.args — pass one with
+# `docker build $(sed 's/^/--build-arg /' docker/targets/<target>.args)` or let
+# compose/CI do it.
+#
+# Mirrors upstream setup.sh, but layer-by-layer so a failing extension does not
+# invalidate the whole build cache. A plain venv replaces upstream's conda.
 #
 # Model weights are NOT baked in — they live in the `models` volume (HF_HOME).
 # ---------------------------------------------------------------------------
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
+ARG BASE_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04
+FROM ${BASE_IMAGE}
 
 # Pinned upstream commit (main @ 2026-08-16). Bump deliberately, not by accident.
 ARG TRELLIS2_COMMIT=75fbf0183001ed9876c8dbb35de6b68552ee08bd
-# sm_89 = Ada Lovelace (RTX 6000 Ada / RTX 4090). Restricting this cuts the
-# CUDA extension build time by roughly an order of magnitude.
+
+# --- Target-dependent knobs ------------------------------------------------
+# CUDA_ARCH: 8.9 = Ada (RTX 6000 Ada / 4090); 12.1 = GB10 Blackwell (DGX Spark).
+# Restricting to one arch cuts extension build time by ~an order of magnitude.
 ARG CUDA_ARCH=8.9
+# Ubuntu 22.04 ships 3.10; 24.04 ships 3.12. Upstream targets 3.10.
+ARG PYTHON_VERSION=3.10
+ARG TORCH_SPEC="torch==2.6.0 torchvision==0.21.0"
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
 ARG MAX_JOBS=16
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -27,7 +42,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # libegl/libgles/libglvnd: nvdiffrast needs a real GL/EGL toolchain.
 # sudo: upstream setup.sh --basic shells out to `sudo apt install libjpeg-dev`.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3.10 python3.10-venv python3.10-dev python3-pip \
+      python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev python3-pip \
       build-essential ninja-build cmake pkg-config git curl ca-certificates sudo \
       libjpeg-dev zlib1g-dev libpng-dev \
       libglvnd-dev libgl1 libgl1-mesa-dev libegl1 libegl1-mesa-dev \
@@ -41,22 +56,41 @@ RUN mkdir -p /usr/share/glvnd/egl_vendor.d \
       > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
 # --- Python environment ----------------------------------------------------
-RUN python3.10 -m venv /opt/venv
+RUN python${PYTHON_VERSION} -m venv /opt/venv
 ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:$PATH
 RUN pip install --upgrade pip setuptools wheel packaging
 
 # Torch first — every extension below builds against it with --no-build-isolation.
-RUN pip install torch==2.6.0 torchvision==0.21.0 \
-      --index-url https://download.pytorch.org/whl/cu124
+# The sm_121 caveat for DGX Spark: stock wheels compile kernels only to sm_120,
+# leaving GB10 on PTX JIT, which has been reported to hang during diffusion
+# sampling. Point TORCH_INDEX_URL at an sm_121-native build if that bites.
+RUN pip install ${TORCH_SPEC} --index-url ${TORCH_INDEX_URL} \
+ && python -c "import torch; print('torch', torch.__version__)"
 
 # --- TRELLIS.2 source ------------------------------------------------------
 # --recursive matters: o-voxel/third_party/eigen is a submodule and the
 # o-voxel build fails without it.
+#
+# Retried with backoff: the submodule chain reaches gitlab.com for eigen, which
+# regularly returns "unable to handle this request due to load". git's own
+# single retry is not enough, and a third-party outage should not fail a
+# release build. Each attempt resumes what previous ones fetched.
 RUN git clone https://github.com/microsoft/TRELLIS.2.git /opt/TRELLIS.2 \
  && cd /opt/TRELLIS.2 \
  && git checkout ${TRELLIS2_COMMIT} \
- && git submodule update --init --recursive
+ && for attempt in 1 2 3 4 5; do \
+      echo "submodule fetch attempt ${attempt}/5"; \
+      git submodule update --init --recursive && break; \
+      if [ "${attempt}" = "5" ]; then \
+        echo "submodule fetch failed after 5 attempts" >&2; exit 1; \
+      fi; \
+      if [ "${attempt}" = "2" ]; then \
+        echo "switching eigen to the GitHub mirror"; \
+        git config --global url."https://github.com/libeigen/eigen.git".insteadOf "https://gitlab.com/libeigen/eigen.git"; \
+      fi; \
+      sleep $((attempt * 20)); \
+    done
 WORKDIR /opt/TRELLIS.2
 
 ENV CUDA_HOME=/usr/local/cuda \
@@ -78,7 +112,7 @@ RUN mkdir -p /opt/buildstub \
 # --- Base Python dependencies (upstream `--basic`) -------------------------
 # pillow-simd is a drop-in speed optimization that frequently fails to compile;
 # pre-satisfying the requirement lets setup.sh's own `pip install pillow-simd`
-# no-op instead of aborting the layer.
+# no-op instead of aborting the layer. It is replaced with stock Pillow later.
 RUN pip install pillow-simd || pip install "pillow>=10.4,<12"
 RUN apt-get update \
  && PATH=/opt/buildstub:$PATH bash setup.sh --basic \
@@ -98,15 +132,25 @@ RUN PATH=/opt/buildstub:$PATH bash setup.sh --cumesh
 RUN PATH=/opt/buildstub:$PATH bash setup.sh --flexgemm
 RUN PATH=/opt/buildstub:$PATH bash setup.sh --o-voxel
 
-# --- flash-attn (the install that actually works) --------------------------
-# Prebuilt wheel matching this exact stack (cp310 / torch 2.6 / cu12 / pre-2.7
-# cxx11 ABI). Falls back to a source build with --no-build-isolation, which is
-# correct but slow. The import check makes a silent no-op impossible: if
-# flash-attn is missing, the build stops here instead of at first inference.
-ARG FLASH_ATTN_WHEEL=https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.3/flash_attn-2.7.3+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
-RUN pip install "${FLASH_ATTN_WHEEL}" \
- || pip install flash-attn==2.7.3 --no-build-isolation \
- ; python -c "import flash_attn; print('flash-attn', flash_attn.__version__)"
+# --- Attention backend ------------------------------------------------------
+# trellis2/modules/sparse/config.py accepts ONLY xformers / flash_attn /
+# flash_attn_3 for sparse attention — there is no sdpa or naive fallback there,
+# unlike dense attention. So each target must ship a working one of those two,
+# and the import check below is what proves it.
+#
+#   nvidia-cuda: prebuilt flash-attn wheel for this exact stack
+#                (cp310 / torch 2.6 / cu12 / pre-2.7 cxx11 ABI).
+#   dgx-spark:   no flash-attn wheel exists for aarch64+sm_121, and FA2 targets
+#                sm_80/sm_90, so xformers is built from source instead.
+#
+# ATTN_PACKAGE is what pip installs; ATTN_IMPORT is what must then import.
+ARG ATTN_PACKAGE=https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.3/flash_attn-2.7.3+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+ARG ATTN_PACKAGE_FALLBACK="flash-attn==2.7.3"
+ARG ATTN_IMPORT=flash_attn
+ARG DEFAULT_ATTN_BACKEND=flash_attn
+RUN pip install "${ATTN_PACKAGE}" \
+ || pip install ${ATTN_PACKAGE_FALLBACK} --no-build-isolation \
+ ; python -c "import ${ATTN_IMPORT} as m; print('${ATTN_IMPORT}', getattr(m, '__version__', 'unknown'))"
 
 # --- Pillow: drop pillow-simd -----------------------------------------------
 # pillow-simd is stuck at 9.5 and its WebP plugin is broken against modern
@@ -140,9 +184,22 @@ ENV PYTHONPATH=/opt/TRELLIS.2:/opt/server \
     HF_HUB_ENABLE_HF_TRANSFER=0 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=all \
+    ATTN_BACKEND=${DEFAULT_ATTN_BACKEND} \
     TRELLIS2_MODEL=microsoft/TRELLIS.2-4B \
     TRELLIS2_OUTPUT_DIR=/outputs \
     TRELLIS2_ENVMAP=/opt/TRELLIS.2/assets/hdri/forest.exr
+
+# Recorded so a running container can say what it was built for, and so the
+# release workflow can label the image without guessing.
+ARG GEPPETTO_TARGET=nvidia-cuda
+ENV GEPPETTO_TARGET=${GEPPETTO_TARGET} \
+    GEPPETTO_CUDA_ARCH=${CUDA_ARCH}
+LABEL org.opencontainers.image.title="Geppetto" \
+      org.opencontainers.image.description="TRELLIS.2 image-to-3D inference service" \
+      org.opencontainers.image.source="https://github.com/floatingsidewal/geppetto" \
+      org.opencontainers.image.licenses="MIT" \
+      io.geppetto.target="${GEPPETTO_TARGET}" \
+      io.geppetto.cuda-arch="${CUDA_ARCH}"
 
 VOLUME ["/models", "/outputs"]
 EXPOSE 8000 7860

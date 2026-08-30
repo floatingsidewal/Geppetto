@@ -1,30 +1,49 @@
-name: trellis2
+name: geppetto
 
 # ---------------------------------------------------------------------------
-# Default profile brings up the REST API only.
-#   docker compose up -d                    # API on :${API_PORT}
-#   docker compose --profile ui up -d       # + upstream Gradio demo on :${UI_PORT}
+# Geppetto — a picture goes in, a 3D model comes out.
 #
-# The UI is a separate service from the same image so it can be started only
-# when wanted — running both loads two copies of a 4B model (fine in 48 GB,
-# but wasteful).
+#   docker compose up -d                    # API on :${API_PORT}, web UI at /app
+#   docker compose --profile ui up -d       # + upstream Gradio demo on :${UI_PORT}
+#   docker compose --profile scale up -d    # + a second worker on the other GPU
+#
+# By default this builds the target matching this machine. Set GEPPETTO_TARGET
+# to build the other one (see docker/targets/*.args), though each target must be
+# built on its own CPU architecture.
+#
+# To run a published image instead of building, set
+#   GEPPETTO_IMAGE=ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
 # ---------------------------------------------------------------------------
 
-x-trellis2-common: &trellis2-common
+x-geppetto-common: &geppetto-common
   build:
     context: .
     dockerfile: docker/Dockerfile
-  image: trellis2-infer:latest
-  environment: &trellis2-env
+    args:
+      # Compose cannot read docker/targets/*.args directly. These mirror
+      # nvidia-cuda.args; for the dgx-spark target use scripts/build.sh, which
+      # reads the target file as the single source of truth.
+      BASE_IMAGE: ${BASE_IMAGE:-nvidia/cuda:12.4.1-devel-ubuntu22.04}
+      CUDA_ARCH: ${CUDA_ARCH:-8.9}
+      PYTHON_VERSION: ${PYTHON_VERSION:-3.10}
+      GEPPETTO_TARGET: ${GEPPETTO_TARGET:-nvidia-cuda}
+  image: ${GEPPETTO_IMAGE:-geppetto:nvidia-cuda}
+  environment: &geppetto-env
     HF_HOME: /models
     HF_TOKEN: ${HF_TOKEN:-}
     HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
-    # Set to "xformers" if the flash-attn build is unusable on this GPU.
-    ATTN_BACKEND: ${ATTN_BACKEND:-flash-attn}
+    # Valid values are exactly: flash_attn, flash_attn_3, xformers. Anything
+    # else is silently ignored by upstream's validator, so a typo here does not
+    # error — it just quietly keeps the image default. Underscores, not hyphens.
+    ATTN_BACKEND: ${ATTN_BACKEND:-flash_attn}
     PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     OPENCV_IO_ENABLE_OPENEXR: "1"
     NVIDIA_DRIVER_CAPABILITIES: all
     LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # Origins allowed to call the API from a browser. The default is permissive
+    # so the single-page app works when opened straight off disk (file:// pages
+    # send Origin: null). Restrict this if the service leaves a trusted network.
+    GEPPETTO_CORS_ORIGINS: ${GEPPETTO_CORS_ORIGINS:-*}
   volumes:
     - models:/models
     - ./outputs:/outputs
@@ -34,10 +53,10 @@ x-trellis2-common: &trellis2-common
   restart: unless-stopped
 
 services:
-  # --- REST API, pinned to one GPU ----------------------------------------
+  # --- REST API + web UI, pinned to one GPU -------------------------------
   api:
-    <<: *trellis2-common
-    container_name: trellis2-api
+    <<: *geppetto-common
+    container_name: geppetto-api
     ports:
       - "${API_PORT:-8080}:8000"
     deploy:
@@ -57,12 +76,12 @@ services:
 
   # --- Upstream Gradio demo (opt-in) --------------------------------------
   ui:
-    <<: *trellis2-common
-    container_name: trellis2-ui
+    <<: *geppetto-common
+    container_name: geppetto-gradio
     profiles: ["ui"]
     working_dir: /opt/TRELLIS.2
     environment:
-      <<: *trellis2-env
+      <<: *geppetto-env
       GRADIO_SERVER_NAME: "0.0.0.0"
       GRADIO_SERVER_PORT: "7860"
     command: ["python", "app.py"]
@@ -81,8 +100,8 @@ services:
   # Then round-robin your client between ${API_PORT} and ${API_PORT_2}, or put
   # a least-connections proxy in front of both.
   api2:
-    <<: *trellis2-common
-    container_name: trellis2-api2
+    <<: *geppetto-common
+    container_name: geppetto-api2
     profiles: ["scale"]
     ports:
       - "${API_PORT_2:-8081}:8000"
@@ -102,4 +121,7 @@ services:
 
 volumes:
   models:
+    # Deliberately keeps the old name through the rename: this volume holds ~21 GB
+    # of downloaded weights, and renaming it would orphan them and force a full
+    # re-download for no benefit.
     name: trellis2-models
