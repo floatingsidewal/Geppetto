@@ -162,6 +162,16 @@ RUN pip uninstall -y pillow-simd pillow >/dev/null 2>&1 || true
 RUN pip install --no-cache-dir "pillow>=10.4,<12" \
  && python -c "from PIL import Image, features; assert features.check('webp'), 'webp support missing'; print('pillow', Image.__version__, 'webp ok')"
 
+# --- OpenCV: pin to 4.x so OpenEXR still decodes ----------------------------
+# setup.sh installs opencv-python-headless unpinned, which now resolves to 5.x.
+# OpenCV 5 no longer decodes OpenEXR, so cv2.imread() on the HDRI env map
+# returns None even with OPENCV_IO_ENABLE_OPENEXR=1. The service treats that as
+# "preview renders unavailable" and carries on, so the only symptom is that
+# every preview_video request quietly produces no video. Pinning to 4.x
+# restores it; the assertion makes a silent regression impossible.
+RUN pip install --no-cache-dir "opencv-python-headless>=4.9,<5" \
+ && OPENCV_IO_ENABLE_OPENEXR=1 python -c "import cv2; im = cv2.imread('/opt/TRELLIS.2/assets/hdri/forest.exr', cv2.IMREAD_UNCHANGED); assert im is not None, 'OpenEXR decode failed — preview renders would be silently disabled'; print('opencv', cv2.__version__, 'exr ok', im.shape)"
+
 # --- transformers: pin to the DINOv3 layout upstream was written against ----
 # setup.sh installs transformers unpinned. trellis2/modules/image_feature_extractor.py
 # iterates `self.model.layer`, which is the 4.56 DINOv3ViTModel layout; in 5.x

@@ -1,10 +1,37 @@
+<div align="center">
+
 # Geppetto
 
-**A picture goes in. A 3D model comes out.**
+### A picture goes in. A 3D model comes out.
 
-A containerized inference service for **[Microsoft TRELLIS.2](https://github.com/microsoft/TRELLIS.2)** — turning a single 2D image into a textured 3D asset with real PBR materials, plus a printable STL.
+![Geppetto turns a photograph into a printable 3D model](docs/hero.png)
 
-Wraps the upstream model in a job-queue REST API, ships a zero-dependency web UI, keeps the official Gradio demo available as an opt-in service, and pins every dependency so the whole thing rebuilds identically.
+*Drop in a photo. Get back a textured GLB you can spin, and an STL you can print.*
+
+</div>
+
+---
+
+We put together a few pieces to make this easy for you to reproduce and use for academic and hobbyist
+purposes in project **Geppetto**. The hard parts — the gated weights, the six CUDA extensions that
+have to compile just so, the platform differences between a workstation GPU and a DGX Spark — are
+already solved here. Clone it, pull the container for your hardware, and convert a picture in about
+two minutes.
+
+> *We love the idea of Geppetto wishing his wooden boy into real life, and we think it captures what
+> TRELLIS and the projects around it have handed to us hobbyists: the ability to take something flat
+> and imagined, and make it real enough to hold.*
+
+**What you get:**
+
+- A **REST API** with a job queue, so long generations do not block anything
+- A **web UI** built into the container — open a page, pick a file, press a button
+- A **CLI client** with no dependencies beyond the standard library
+- An **agent skill** for Claude and Copilot, so "make this printable" works in a chat
+- **Two containers**, one per hardware target, both built and smoke-tested on real GPUs
+
+Built on **[Microsoft TRELLIS.2](https://github.com/microsoft/TRELLIS.2)** — a single 2D image to a
+textured 3D asset with real PBR materials, plus a printable STL.
 
 ### Two release targets
 
@@ -19,7 +46,8 @@ Both come from one Dockerfile; everything that differs is a build arg, so the tw
 docker pull ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
 ```
 
-> **Status:** research / internal evaluation deployment. Read [Licensing](#licensing--what-you-can-actually-do-with-this) before this touches anything commercial — the answer is genuinely not "it's MIT, go ahead".
+> **Status:** research / hobbyist deployment. Read [Licensing](#licensing--what-you-can-actually-do-with-this)
+> before this touches anything commercial — the answer is genuinely not "it's MIT, go ahead".
 
 ---
 
@@ -41,7 +69,7 @@ docker pull ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
 - [How the image is built](#how-the-image-is-built)
 - [Building and releasing](#building-and-releasing)
 - [Troubleshooting](#troubleshooting)
-- [Scaling to both GPUs](#scaling-to-both-gpus)
+- [Scaling to more than one GPU](#scaling-to-more-than-one-gpu)
 - [Related work and alternatives](#related-work-and-alternatives)
 - [Citation](#citation)
 
@@ -108,22 +136,53 @@ Post-processing (remeshing, decimation, UV unwrapping, texture baking) runs on C
 
 ## Licensing — what you can actually do with this
 
-This is not a single-license project, and the pieces disagree with each other.
+This is not a single-license project, and the pieces disagree with each other. Every row below was
+checked against the upstream licence file or model card, not assumed.
 
-| Component | License | Commercial use |
-|---|---|---|
-| `microsoft/TRELLIS.2` source code | **MIT** | Yes |
-| `microsoft/TRELLIS.2-4B` weights | **MIT** | Yes |
-| The project page's own materials | "solely for academic and research purposes… **not intended for commercial exploitation or use**" | No |
-| `nvdiffrast` | NVIDIA Source Code License | **No — non-commercial only** |
-| `nvdiffrec` | NVIDIA Source Code License | **No — non-commercial only** |
-| `briaai/RMBG-2.0` | CC BY-NC 4.0 | **No — non-commercial only** |
-| `facebook/dinov3-...` | Meta DINOv3 License | See Meta's terms |
-| This repository | MIT | Yes |
+| Component | Role | License | Commercial use |
+|---|---|---|---|
+| `microsoft/TRELLIS.2` source | the pipeline | MIT | Yes |
+| `microsoft/TRELLIS.2-4B` weights | the generator | MIT | Yes |
+| `microsoft/TRELLIS-image-large` | sparse-structure decoder | MIT | Yes |
+| `o-voxel` | mesh/GLB export | MIT — ships inside the TRELLIS.2 repo | Yes |
+| `CuMesh`, `FlexGEMM` | CUDA extensions | MIT | Yes |
+| `utils3d` | geometry helpers | MIT | Yes |
+| `flash-attn` | attention kernels | BSD-3-Clause | Yes |
+| **`facebook/dinov3-…`** | **image conditioning — required** | **Meta DINOv3 License** | **Yes, with conditions** |
+| `nvdiffrast` | preview rendering only | NVIDIA Source Code License | **No — non-commercial** |
+| `nvdiffrec` (JeffreyXiang fork) | texturing demo only | NVIDIA Source Code License | **No — non-commercial** |
+| `briaai/RMBG-2.0` | background removal — optional | Bria licence (`license:other`) | **No** without a Bria agreement |
+| HDRI env maps (Poly Haven) | preview lighting | CC0 | Yes |
+| Geppetto (this repository) | server, UI, client, skill | MIT | Yes |
 
-**This deployment is configured for research and internal evaluation**, so it installs everything.
+### What actually binds you
 
-If the use case ever changes, the useful fact is that **the core generation pipeline never imports nvdiffrast** — `trellis2/pipelines/trellis2_image_to_3d.py` imports only torch, numpy, PIL and internal modules. nvdiffrast and nvdiffrec exist here for *preview rendering* and the texturing demo. A commercial-safe variant would drop both extensions (losing only the MP4 preview), skip `preprocess_image` in favour of pre-cut RGBA inputs (avoiding RMBG-2.0), and still needs a real answer on the project page's research-only language versus the MIT repo license. That is a question for counsel, not for a README.
+**DINOv3 cannot be removed.** It is the image conditioning encoder — no DINOv3, no generation. Meta
+permits commercial use, but attaches conditions that apply to *this* project because it is public and
+ships containers that pull those weights:
+
+- Redistribution of the weights or derivatives must include the DINOv3 License and comply with it.
+- **"Built with DINOv3" must be displayed prominently** on a related website, UI, or documentation.
+- Access is gated behind Meta's manual approval, and requires accepting their terms individually.
+  Nobody can use Geppetto on your approval — every operator requests their own.
+
+The other two restrictive components **are** removable, which is the useful part:
+
+- **nvdiffrast / nvdiffrec are non-commercial, and the core pipeline never imports them.**
+  `trellis2/pipelines/trellis2_image_to_3d.py` imports only torch, numpy, PIL and internal modules.
+  They exist here for the MP4 turntable preview and the texturing demo. Drop both and you lose the
+  preview video, nothing else.
+- **RMBG-2.0 is only used by `preprocess_image`.** Pass `preprocess_image: false` with a pre-cut RGBA
+  image and it is never loaded — which is also why it is listed as optional in the preflight check.
+
+So a commercially-safe configuration exists: drop nvdiffrast/nvdiffrec, feed pre-cut RGBA inputs, and
+comply with the DINOv3 attribution terms. **This is a description of the dependency graph, not legal
+advice** — the TRELLIS.2 project page also carries research-only language that sits awkwardly beside
+its MIT repo licence, and reconciling those is a question for counsel, not a README.
+
+### Attribution
+
+Built with DINOv3.
 
 ## Gated dependencies — read this before you build
 
@@ -141,52 +200,105 @@ There is also a quiet third dependency: the sparse-structure decoder is pulled f
 
 ## Requirements
 
-| | Required | This workstation |
-|---|---|---|
-| GPU | NVIDIA, ≥24 GB VRAM | 2× RTX 6000 Ada, 48 GB each (sm_89) |
-| Driver | Recent enough for CUDA 12.4 | 596.86 (CUDA 13.2 capable) |
-| OS | Linux (or WSL2) | Windows 11 + WSL2 Ubuntu 26.04 LTS |
-| RAM | 32 GB+ | 512 GB |
-| Disk | ~60 GB (image ~40 GB + weights ~19 GB) | ample |
-| Software | Docker Engine + NVIDIA Container Toolkit | installed by `scripts/host-setup.sh` |
+All VRAM and timing figures below are **measured on the reference machine**, not estimated.
 
-Upstream verified the code on A100 and H100. Ada Lovelace (sm_89) is well within the supported envelope and flash-attention works natively.
+| | Minimum | Reference machine (`nvidia-cuda`) |
+|---|---|---|
+| GPU | NVIDIA, 16 GB VRAM comfortably covers every setting | RTX 6000 Ada 48 GB (sm_89) |
+| Compute capability | must match the image: sm_89 (`nvidia-cuda`) or sm_121 (`dgx-spark`) | sm_89 |
+| Driver | recent enough for the image's CUDA (12.4 / 13) | 596.86 |
+| OS | Linux, or Windows + WSL2 | Windows 11 + WSL2 Ubuntu 26.04 |
+| RAM | 32 GB | 512 GB |
+| Disk | ~50 GB (image 25.9 GB + weights 21.1 GB) | ample |
+| Software | Docker Engine + NVIDIA Container Toolkit | `scripts/host-setup.sh` installs both |
+
+**Peak VRAM, measured:**
+
+| Settings | Peak VRAM | Time |
+|---|---|---|
+| 512³, texture 1024 | 2.6 GB | ~90 s |
+| 1024³, texture 2048 (default) | 4.5 – 6.2 GB | 110 – 190 s |
+| 1536³, texture 4096 (maximum) | 11.3 GB | ~300 s |
+
+A 12 GB card will run the defaults; 16 GB clears every setting including the maximum. The 4B model
+is not resident in full precision, which is why the numbers are far below what "4B parameters"
+suggests.
+
+Upstream verified the code on A100 and H100. Ada Lovelace (sm_89) is well within the supported
+envelope and flash-attention works natively there.
+
+> **Running on other NVIDIA hardware:** change `CUDA_ARCH` in `docker/targets/*.args` (Ampere 8.6,
+> Ada 8.9, Hopper 9.0, Blackwell 12.0/12.1) and rebuild. The extension layers are compiled for one
+> architecture deliberately — it cuts build time by roughly an order of magnitude.
 
 ## Quick start
 
-Everything runs from **WSL2**, not PowerShell.
+### Option A — run a published container
+
+The images carry the server, the web UI and the CLI client. Nothing to build.
 
 ```bash
-# 0. Request access to both gated models now — the DINOv3 one is human-reviewed.
+# 0. Request access to the gated models FIRST — DINOv3 is reviewed by a human
+#    and can take hours to days. See "Gated dependencies" above.
 
+# 1. Fetch the image for your hardware
+docker pull ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest   # x86_64 + Ada (sm_89)
+# docker pull ghcr.io/floatingsidewal/geppetto:dgx-spark-latest   # aarch64 + GB10 (sm_121)
+
+# 2. Download the weights once (~21 GB) into a named volume
+echo "HF_TOKEN=hf_your_token_here" > .env
+GEPPETTO_IMAGE=ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest bash scripts/fetch-models.sh
+
+# 3. Run it
+docker run -d --name geppetto --gpus all -p 8080:8000   -v trellis2-models:/models -v "$PWD/outputs:/outputs"   ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
+```
+
+Open **http://localhost:8080/app**. The model takes ~90 seconds to load; `/healthz` reports
+`"model_loaded": true` when it is ready.
+
+### Option B — build from source
+
+```bash
 # 1. One-time host preparation: Docker Engine + NVIDIA Container Toolkit
-cd /mnt/c/Users/brad/git/trellis2-infer
+git clone https://github.com/floatingsidewal/Geppetto.git && cd Geppetto
 sudo bash scripts/host-setup.sh
 #    then open a NEW shell so docker group membership applies
 
 # 2. Configure
 cp .env.example .env
-$EDITOR .env            # set HF_TOKEN; GPU_ID defaults to 1 (GPU 0 drives the display)
+$EDITOR .env                      # set HF_TOKEN
 
-# 3. Build the image (30–90 minutes — it compiles six CUDA extensions)
-docker compose build
+# 3. Build for your hardware (~10 min on 16 cores; it compiles six CUDA extensions)
+bash scripts/build.sh nvidia-cuda
 
-# 4. Pre-download ~19 GB of weights and verify gated access
+# 4. Verify the build before trusting it
+bash scripts/smoke-test.sh geppetto:nvidia-cuda
+
+# 5. Weights (~21 GB, once) and run
 bash scripts/fetch-models.sh
-
-# 5. Run
 docker compose up -d
-curl -s localhost:8080/healthz | python3 -m json.tool
-#    status goes "starting" -> "healthy" after the model loads (several minutes)
 ```
 
-Optional Gradio UI (the upstream demo, unmodified) on http://localhost:7860:
+Interactive API docs are at http://localhost:8080/docs.
+
+Optional: the upstream Gradio demo, unmodified, on http://localhost:7860 — note this starts a
+**second container that loads its own copy of the model**. The built-in web UI at `/app` needs no
+extra process.
 
 ```bash
 docker compose --profile ui up -d
 ```
 
-Interactive API docs are at http://localhost:8080/docs.
+### Running under WSL2
+
+Two host settings matter, and neither is obvious:
+
+- **`networkingMode=mirrored`** in `%USERPROFILE%\.wslconfig`, or the service is only reachable on a
+  NAT address that changes every restart rather than on `localhost`.
+- **Something must hold the WSL VM open.** With no client attached, WSL shuts the VM down and takes
+  Docker — and this service — with it, which looks exactly like a crashing server. A logon task
+  running `wsl.exe -d Ubuntu -u root -e sleep infinity` is enough. `vmIdleTimeout` did **not**
+  prevent this in testing.
 
 ## The web UI
 
@@ -315,42 +427,77 @@ Rules of thumb:
 
 ## Performance
 
-Upstream's published H100 figures, and what to expect here. The RTX 6000 Ada is roughly 90 TFLOPS dense BF16 against the H100's ~400, so **2.5–4×** the published times is the working estimate:
+Measured end to end on the reference machine — submit to artefacts on disk, including export.
+Upstream's published H100 figures are shown for scale; they are generation-only, so the comparison
+is indicative rather than like-for-like.
 
-| Resolution | H100 (published) | RTX 6000 Ada (estimated) | Measured |
+### `nvidia-cuda` — RTX 6000 Ada (sm_89), flash-attn
+
+| Settings | Measured, end to end | Peak VRAM | H100 (published, generation only) |
 |---|---|---|---|
-| 512³ | 3 s | 8–12 s | _run the benchmark_ |
-| 1024³ | 17 s | 45–70 s | _run the benchmark_ |
-| 1536³ | 60 s | 150–240 s | _run the benchmark_ |
+| 512³, texture 1024 | 90 s | 2.6 GB | 3 s |
+| 512³, texture 2048 | 124 s | 2.6 GB | — |
+| 1024³, texture 2048 (default) | 109 – 188 s | 4.5 – 6.2 GB | 17 s |
+| 1536³, texture 4096 (maximum) | 300 s | 11.3 GB | 60 s |
 
-These are extrapolations, not measurements. Replace them with real numbers:
+Two things worth knowing before reading too much into these:
+
+- **Export is a real share of the time.** A 512³ job spent 70 s generating and 20 s exporting. Raising
+  the texture size lengthens export, not generation, which is why 512³/2048 is slower than 512³/1024
+  while using identical VRAM.
+- **The same settings vary run to run** (109 s vs 188 s at 1024³) because the seed changes what gets
+  generated. Compare medians over several runs, not single jobs.
+
+### `dgx-spark` — GB10 Grace Blackwell (sm_121), xformers
+
+**Not yet measured** — pending hardware access. Expect it to be *slower* than the workstation figures
+despite newer silicon: GB10's unified memory runs around 273 GB/s against the RTX 6000 Ada's ~960
+GB/s, and this workload is bandwidth-bound. The Spark's advantages are being a dedicated always-on
+box with 128 GB of unified memory, not raw throughput. This table will be replaced with real numbers
+once the target has run.
+
+### Benchmarking your own machine
 
 ```bash
-python3 scripts/benchmark.py --image inputs/T.png --repeats 3
+python3 scripts/benchmark.py --image inputs/your-image.png --repeats 3
 ```
 
-It writes a JSON record and a markdown table to `outputs/benchmark/`, including peak VRAM and the ratio against the H100 reference.
+It writes a JSON record and a markdown table to `outputs/benchmark/`, including peak VRAM and the
+ratio against the H100 reference.
 
-VRAM is not a constraint here: the stated minimum is 24 GB and each card has 48 GB.
+VRAM is not the constraint people expect: the maximum-quality path peaked at 11.3 GB, so a 16 GB
+card clears every setting.
 
 ## Repository layout
 
 ```
-trellis2-infer/
-├── docker/Dockerfile          # CUDA 12.4 + torch 2.6 + six CUDA extensions
+Geppetto/
+├── docker/
+│   ├── Dockerfile             # one file, both targets — everything variable is a build arg
+│   └── targets/
+│       ├── nvidia-cuda.args   # x86_64 / sm_89 / CUDA 12.4 / flash-attn   (verified)
+│       └── dgx-spark.args     # aarch64 / sm_121 / CUDA 13 / xformers     (unverified)
 ├── docker-compose.yml         # api (default) · ui (profile) · api2 (profile: scale)
-├── .env.example               # HF token, GPU pinning, ports
+├── .env.example               # HF token, GPU pinning, ports, CORS, upload limit
 ├── server/
-│   ├── app.py                 # FastAPI endpoints
+│   ├── app.py                 # FastAPI endpoints + the /app web UI route
 │   ├── worker.py              # model lifecycle + single-threaded job queue
 │   ├── schemas.py             # pydantic models; upstream defaults live here
+│   ├── static/index.html      # the web UI — one self-contained file, no build step
 │   └── requirements.txt
 ├── scripts/
+│   ├── build.sh               # build one target; refuses the wrong CPU architecture
+│   ├── smoke-test.sh          # prove an image works on a real GPU before publishing
 │   ├── host-setup.sh          # Docker Engine + NVIDIA Container Toolkit (run with sudo)
-│   ├── fetch-models.sh        # gated-access preflight + ~19 GB weight prefetch
+│   ├── fetch-models.sh        # gated-access preflight + ~21 GB weight prefetch
+│   ├── check-hf-access.sh     # standalone gate check; no Docker or image needed
 │   ├── convert.py             # batch 2D→3D client
 │   ├── benchmark.py           # measure this machine
+│   ├── make-hero.sh           # regenerate the README banner from a real conversion
 │   └── trellis_client.py      # stdlib-only API client shared by the scripts
+├── skills/geppetto/SKILL.md   # agent skill for Claude / Copilot
+├── .github/workflows/         # build both targets on self-hosted runners, publish to GHCR
+├── docs/                      # README artwork
 ├── inputs/                    # drop source images here (gitignored)
 └── outputs/                   # job artifacts (gitignored)
 ```
@@ -365,6 +512,9 @@ trellis2-infer/
 - **flash-attn is installed explicitly, not by `setup.sh`.** Upstream's line omits `--no-build-isolation`, so its build environment has no torch, metadata generation dies, and pip folds the whole thing into a zero exit — a layer that "succeeds" having installed nothing. The explicit install asserts the import afterwards.
 - **`transformers` is pinned to 4.56.2.** Upstream indexes `self.model.layer` on DINOv3, which 5.x moved into a nested encoder; unpinned, every generation dies with `'DINOv3ViTModel' object has no attribute 'layer'`. A build-time assertion catches future drift.
 - **Stock Pillow, not pillow-simd.** pillow-simd is stuck at 9.5 and its WebP plugin raises on import against modern libwebp, so every WebP upload 500s. Its SIMD advantage is irrelevant next to a two-minute generation.
+- **OpenCV is pinned to 4.x.** Unpinned it resolves to 5.x, which no longer decodes OpenEXR, so
+  `cv2.imread()` on the HDRI env map returns `None` and every `preview_video` request quietly
+  produces no video. A build-time assertion decodes the env map so this cannot regress silently.
 - **Submodule fetches retry with backoff and a mirror.** The chain reaches gitlab.com for eigen, which regularly refuses under load; a third-party outage should not fail a release build.
 - **Pinned upstream commit** (`TRELLIS2_COMMIT`), cloned `--recursive` — `o-voxel/third_party/eigen` is a submodule and the o-voxel build fails without it.
 - **`TORCH_CUDA_ARCH_LIST`** is set per target (8.9 Ada, 12.1 GB10) — building for one architecture cuts extension compile time by roughly an order of magnitude.
@@ -372,7 +522,7 @@ trellis2-infer/
 - **`sudo` is installed** because upstream's `--basic` step shells out to `sudo apt install libjpeg-dev`, which aborts in a bare container.
 - **`pillow-simd` is pre-satisfied** with a fallback to stock Pillow — it frequently fails to compile, and it is a speed optimization, not a functional dependency.
 - **EGL vendor config is written** so nvdiffrast can create a headless GL context; `NVIDIA_DRIVER_CAPABILITIES=all` exposes graphics, not just compute.
-- **Weights are not baked in.** They live in the `trellis2-models` volume, so rebuilding the image doesn't re-download 19 GB.
+- **Weights are not baked in.** They live in the `trellis2-models` volume, so rebuilding the image does not re-download the ~21 GB. The volume keeps the name `trellis2-models` from before the rename — renaming it would orphan the weights.
 
 ## Building and releasing
 
@@ -423,15 +573,30 @@ Lower `max_num_tokens`, or drop `texture_size` to 2048. With 48 GB this should n
 **Build is extremely slow**
 Expected for the first build (six CUDA extensions; flash-attention may compile from source). Subsequent builds hit the layer cache. Do not move the build to `/mnt/c`-hosted Docker storage.
 
-## Scaling to both GPUs
+## Scaling to more than one GPU
 
-The service defaults to **GPU 1**, leaving GPU 0 free for the display. To bring up a second worker on GPU 0:
+One container owns one GPU. Generation is serialized behind a single worker thread, because
+diffusion inference is not safely concurrent on a device — so throughput comes from running more
+containers, not more threads.
 
 ```bash
+# .env
+GPU_ID=0          # the primary service; `nvidia-smi -L` lists the indices
+GPU_ID_2=1        # the second worker
+
 docker compose --profile scale up -d      # second API on :8081
 ```
 
-Then round-robin your client between `:8080` and `:8081`, or put a least-connections proxy in front of both. Each container holds its own copy of the model (~16 GB), which both cards have room for.
+Then round-robin your client between `:8080` and `:8081`, or put a least-connections proxy in front
+of both. For more than two cards, copy the `api2` service block per GPU, giving each its own
+`device_ids` and host port.
+
+Each container loads its own copy of the weights, so the per-GPU VRAM cost is the same as running
+one — comfortably inside a 16 GB card at any setting (see [Requirements](#requirements) for measured
+figures).
+
+On a workstation where GPU 0 drives a display, point the service at another index so a long
+generation does not fight the desktop for memory.
 
 ## Related work and alternatives
 

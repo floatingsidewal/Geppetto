@@ -101,9 +101,15 @@ cat <<'EOF'
 
 Next steps:
   1. Open a NEW WSL shell (so docker group membership applies).
-  2. cd /mnt/c/Users/brad/git/trellis2-infer
+  2. cd into your clone of the repository.
   3. cp .env.example .env    # then set HF_TOKEN
-  4. bash scripts/fetch-models.sh
-  5. docker compose build && docker compose up -d
+  4. bash scripts/build.sh nvidia-cuda        # or dgx-spark on a DGX Spark
+  5. bash scripts/smoke-test.sh geppetto:nvidia-cuda
+  6. bash scripts/fetch-models.sh
+  7. docker compose up -d                     # UI at http://localhost:8080/app
+
+On WSL2, also set networkingMode=mirrored in %USERPROFILE%\.wslconfig, and arrange for something
+to hold the VM open (e.g. a logon task running: wsl.exe -d Ubuntu -u root -e sleep infinity).
+Otherwise WSL shuts the VM down when idle and takes Docker — and this service — with it.
 
 EOF

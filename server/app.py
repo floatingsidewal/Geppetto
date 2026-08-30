@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
@@ -65,6 +65,12 @@ app.add_middleware(
 )
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# An upload is read fully into memory before it is decoded, and this service has
+# no authentication in front of it, so an unbounded body is a trivial way to
+# exhaust RAM. Input images are photographs — tens of megabytes is already
+# generous. Raise it if you genuinely feed it very large scans.
+MAX_UPLOAD_BYTES = int(os.environ.get("GEPPETTO_MAX_UPLOAD_MB", "64")) * 1024 * 1024
 
 
 def _gpu_info() -> dict:
@@ -130,6 +136,7 @@ def healthz() -> Health:
 
 @app.post("/v1/generate", response_model=JobCreated, status_code=202)
 async def generate(
+    request: Request,
     image: UploadFile = File(..., description="Input image (PNG/JPEG/WebP; RGBA respected)."),
     params: str | None = Form(
         None,
@@ -146,9 +153,23 @@ async def generate(
     except Exception as exc:  # pydantic ValidationError
         raise HTTPException(422, f"Invalid parameters: {exc}") from exc
 
+    # Check the declared length first so an oversized body is rejected before it
+    # is buffered, then check what actually arrived — Content-Length is a claim,
+    # not a guarantee, and chunked uploads do not send one at all.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            413, f"Upload exceeds the {MAX_UPLOAD_BYTES // 1024 // 1024} MB limit."
+        )
+
     raw = await image.read()
     if not raw:
         raise HTTPException(400, "Empty upload.")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            413, f"Upload is {len(raw) // 1024 // 1024} MB; the limit is "
+                 f"{MAX_UPLOAD_BYTES // 1024 // 1024} MB."
+        )
 
     from PIL import Image, UnidentifiedImageError
 
