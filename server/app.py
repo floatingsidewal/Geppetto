@@ -1,4 +1,4 @@
-"""FastAPI front end for TRELLIS.2 image -> 3D inference.
+"""Geppetto — FastAPI front end for TRELLIS.2 image -> 3D inference.
 
 Submit an image, get a job id, poll it, download the GLB. All GPU work is
 serialized behind a single worker thread (see worker.py).
@@ -15,7 +15,8 @@ from io import BytesIO
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from schemas import GenerateParams, Health, Job, JobCreated, JobStatus
 from worker import MODEL_ID, OUTPUT_DIR, engine
@@ -24,7 +25,7 @@ logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
 )
-log = logging.getLogger("trellis2.api")
+log = logging.getLogger("geppetto.api")
 
 
 @asynccontextmanager
@@ -35,14 +36,35 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="TRELLIS.2 Inference API",
+    title="Geppetto",
     version="1.0.0",
     description=(
-        "Single image -> textured 3D asset (GLB with PBR materials), powered by "
-        "microsoft/TRELLIS.2-4B. Research/evaluation deployment."
+        "A picture goes in, a 3D model comes out. Single image -> textured GLB "
+        "(plus STL/OBJ/PLY), powered by microsoft/TRELLIS.2-4B."
     ),
     lifespan=lifespan,
 )
+
+
+# The single-page app is designed to work two ways: served from this API at
+# /app (same origin), and opened straight off disk as a file:// page, which the
+# browser labels origin "null". Supporting the second means permissive CORS.
+#
+# That is a deliberate trade for a GPU box on a trusted LAN: this service has no
+# auth, so anything that can reach the port can already drive it — CORS is not
+# what is protecting it. If Geppetto is ever exposed beyond a trusted network,
+# put it behind a reverse proxy with auth and set GEPPETTO_CORS_ORIGINS to the
+# specific origins you serve the UI from.
+_cors = os.environ.get("GEPPETTO_CORS_ORIGINS", "*")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if _cors == "*" else [o.strip() for o in _cors.split(",") if o.strip()],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _gpu_info() -> dict:
@@ -65,12 +87,26 @@ def _gpu_info() -> dict:
 @app.get("/", include_in_schema=False)
 def root() -> dict:
     return {
-        "service": "trellis2-infer",
+        "service": "geppetto",
         "model": MODEL_ID,
+        "app": "/app",
         "docs": "/docs",
         "health": "/healthz",
         "submit": "POST /v1/generate",
     }
+
+
+@app.get("/app", include_in_schema=False)
+def web_app() -> HTMLResponse:
+    """The single-page UI. Same origin as the API, so no CORS involved.
+
+    The identical file also runs from disk — copy server/static/index.html
+    anywhere and open it; it will ask which server to talk to.
+    """
+    index = STATIC_DIR / "index.html"
+    if not index.is_file():
+        raise HTTPException(404, "UI not bundled in this image.")
+    return HTMLResponse(index.read_text(encoding="utf-8"))
 
 
 @app.get("/healthz", response_model=Health)

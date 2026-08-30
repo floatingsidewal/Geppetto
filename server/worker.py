@@ -21,7 +21,7 @@ from pathlib import Path
 
 from schemas import GenerateParams, Job, JobArtifacts, JobStatus
 
-log = logging.getLogger("trellis2.worker")
+log = logging.getLogger("geppetto.worker")
 
 MODEL_ID = os.environ.get("TRELLIS2_MODEL", "microsoft/TRELLIS.2-4B")
 OUTPUT_DIR = Path(os.environ.get("TRELLIS2_OUTPUT_DIR", "/outputs"))

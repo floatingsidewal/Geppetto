@@ -1,8 +1,23 @@
-# trellis2-infer
+# Geppetto
 
-A containerized inference service for **[Microsoft TRELLIS.2](https://github.com/microsoft/TRELLIS.2)** — turning a single 2D image into a textured 3D asset with real PBR materials.
+**A picture goes in. A 3D model comes out.**
 
-Wraps the upstream model in a job-queue REST API, keeps the official Gradio demo available as an opt-in service, and pins every dependency so the whole thing rebuilds identically. Built for a dual RTX 6000 Ada workstation running Docker inside WSL2.
+A containerized inference service for **[Microsoft TRELLIS.2](https://github.com/microsoft/TRELLIS.2)** — turning a single 2D image into a textured 3D asset with real PBR materials, plus a printable STL.
+
+Wraps the upstream model in a job-queue REST API, ships a zero-dependency web UI, keeps the official Gradio demo available as an opt-in service, and pins every dependency so the whole thing rebuilds identically.
+
+### Two release targets
+
+| Target | Hardware | Status |
+|---|---|---|
+| `nvidia-cuda` | x86_64 + NVIDIA Ada (sm_89) — RTX 6000 Ada, 4090, L40S | **Verified** end to end |
+| `dgx-spark` | aarch64 + GB10 Grace Blackwell (sm_121) — DGX Spark | **Unverified** — see [`docker/targets/dgx-spark.args`](docker/targets/dgx-spark.args) |
+
+Both come from one Dockerfile; everything that differs is a build arg, so the two cannot silently drift apart.
+
+```bash
+docker pull ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
+```
 
 > **Status:** research / internal evaluation deployment. Read [Licensing](#licensing--what-you-can-actually-do-with-this) before this touches anything commercial — the answer is genuinely not "it's MIT, go ahead".
 
@@ -17,12 +32,14 @@ Wraps the upstream model in a job-queue REST API, keeps the official Gradio demo
 - [Gated dependencies — read first](#gated-dependencies--read-this-before-you-build)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
+- [The web UI](#the-web-ui)
 - [Using the API](#using-the-api)
 - [Batch conversion](#batch-conversion)
 - [Parameter guide](#parameter-guide)
 - [Performance](#performance)
 - [Repository layout](#repository-layout)
 - [How the image is built](#how-the-image-is-built)
+- [Building and releasing](#building-and-releasing)
 - [Troubleshooting](#troubleshooting)
 - [Scaling to both GPUs](#scaling-to-both-gpus)
 - [Related work and alternatives](#related-work-and-alternatives)
@@ -170,6 +187,18 @@ docker compose --profile ui up -d
 ```
 
 Interactive API docs are at http://localhost:8080/docs.
+
+## The web UI
+
+The simplest way to use Geppetto: pick a file, click a button.
+
+**Served from the API** — browse to `http://<server>:8080/app`. Nothing to install or configure.
+
+**From disk** — `server/static/index.html` is one self-contained file with no dependencies or build step. Copy it anywhere, open it in a browser, and point it at your server in *Server settings* (it remembers). Because a `file://` page has a `null` origin, this path needs the permissive CORS default; see `GEPPETTO_CORS_ORIGINS` below.
+
+Drag an image in, choose detail and which formats you want, and press **Make it real**. It shows queue position and elapsed time while working, then offers each artifact as a download.
+
+> The service has **no authentication**. Anything that can reach the port can drive the GPU. Keep it on a trusted network, or put a reverse proxy with auth in front of it — CORS is not a security control.
 
 ## Using the API
 
@@ -330,15 +359,43 @@ trellis2-infer/
 
 `docker/Dockerfile` follows upstream's `setup.sh` step for step, with deliberate deviations:
 
-- **Base:** `nvidia/cuda:12.4.1-devel-ubuntu22.04`. The `devel` variant is required — six extensions compile from source with `--no-build-isolation`.
-- **No conda.** Ubuntu 22.04 ships Python 3.10, which is exactly what upstream's `--new-env` creates, so a plain venv replaces the conda dependency.
+- **Base:** `nvidia/cuda:12.4.1-devel-ubuntu22.04` for `nvidia-cuda`, CUDA 13 / Ubuntu 24.04 for `dgx-spark`. The `devel` variant is required — six extensions compile from source with `--no-build-isolation`.
+- **No conda.** The base image's system Python (3.10 on 22.04, 3.12 on 24.04) gets a plain venv, replacing upstream's conda dependency.
+- **A build-only `nvidia-smi` stub.** Upstream's `setup.sh` picks CUDA vs ROCm with `command -v nvidia-smi` and aborts with "No supported GPU found" otherwise — and there is no GPU during `docker build`. The stub sits in its own directory, prepended to `PATH` per-`RUN` only, so it can never shadow the real binary the container runtime injects at run time.
+- **flash-attn is installed explicitly, not by `setup.sh`.** Upstream's line omits `--no-build-isolation`, so its build environment has no torch, metadata generation dies, and pip folds the whole thing into a zero exit — a layer that "succeeds" having installed nothing. The explicit install asserts the import afterwards.
+- **`transformers` is pinned to 4.56.2.** Upstream indexes `self.model.layer` on DINOv3, which 5.x moved into a nested encoder; unpinned, every generation dies with `'DINOv3ViTModel' object has no attribute 'layer'`. A build-time assertion catches future drift.
+- **Stock Pillow, not pillow-simd.** pillow-simd is stuck at 9.5 and its WebP plugin raises on import against modern libwebp, so every WebP upload 500s. Its SIMD advantage is irrelevant next to a two-minute generation.
+- **Submodule fetches retry with backoff and a mirror.** The chain reaches gitlab.com for eigen, which regularly refuses under load; a third-party outage should not fail a release build.
 - **Pinned upstream commit** (`TRELLIS2_COMMIT`), cloned `--recursive` — `o-voxel/third_party/eigen` is a submodule and the o-voxel build fails without it.
-- **`TORCH_CUDA_ARCH_LIST=8.9`** — building only for Ada cuts extension compile time by roughly an order of magnitude. Change `CUDA_ARCH` if you move this image to different hardware.
+- **`TORCH_CUDA_ARCH_LIST`** is set per target (8.9 Ada, 12.1 GB10) — building for one architecture cuts extension compile time by roughly an order of magnitude.
 - **One `RUN` per extension** so a failure in, say, nvdiffrec doesn't invalidate the flash-attention layer.
 - **`sudo` is installed** because upstream's `--basic` step shells out to `sudo apt install libjpeg-dev`, which aborts in a bare container.
 - **`pillow-simd` is pre-satisfied** with a fallback to stock Pillow — it frequently fails to compile, and it is a speed optimization, not a functional dependency.
 - **EGL vendor config is written** so nvdiffrast can create a headless GL context; `NVIDIA_DRIVER_CAPABILITIES=all` exposes graphics, not just compute.
 - **Weights are not baked in.** They live in the `trellis2-models` volume, so rebuilding the image doesn't re-download 19 GB.
+
+## Building and releasing
+
+Target definitions live in `docker/targets/*.args` — one file per target, the single source of truth for base image, CUDA arch, Python version, torch index and attention backend.
+
+```bash
+bash scripts/build.sh nvidia-cuda          # build for this machine
+bash scripts/smoke-test.sh geppetto:nvidia-cuda          # imports, CUDA, backends
+bash scripts/smoke-test.sh geppetto:nvidia-cuda --full   # + generate a real mesh
+```
+
+`build.sh` refuses to build a target on the wrong CPU architecture rather than wasting a long compile — cross-building these CUDA extensions under emulation is not practical, so **each target is built on its own hardware**.
+
+### Releases
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds both targets on self-hosted runners (labelled `ark` and `dgx-spark`), smoke-tests each against a real GPU, and publishes to GHCR:
+
+```
+ghcr.io/floatingsidewal/geppetto:nvidia-cuda-v1.0.0    ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
+ghcr.io/floatingsidewal/geppetto:dgx-spark-v1.0.0      ghcr.io/floatingsidewal/geppetto:dgx-spark-latest
+```
+
+Nothing publishes without passing its smoke test. The `dgx-spark` target is non-blocking until it has generated a mesh on real GB10 hardware at least once — an unverified target must not hold back the one that works, and must not fail silently either.
 
 ## Troubleshooting
 
