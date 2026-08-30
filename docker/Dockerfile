@@ -187,12 +187,17 @@ RUN pip install -r /opt/server/requirements.txt
 COPY server/ /opt/server/
 
 # --- Runtime configuration -------------------------------------------------
+# NVIDIA_VISIBLE_DEVICES is deliberately NOT set here. Baking `=all` into the
+# image overrides the per-container device selection the caller asks for
+# (compose `device_ids`, or `docker run --gpus`), so every container sees every
+# GPU and they all pile onto device 0 — silently, because each one still reports
+# a healthy GPU. Leaving it unset lets the runtime inject exactly what was
+# requested, which is what makes GPU_ID and the `scale` profile work at all.
 ENV PYTHONPATH=/opt/TRELLIS.2:/opt/server \
     OPENCV_IO_ENABLE_OPENEXR=1 \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     HF_HOME=/models \
     HF_HUB_ENABLE_HF_TRANSFER=0 \
-    NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=all \
     ATTN_BACKEND=${DEFAULT_ATTN_BACKEND} \
     TRELLIS2_MODEL=microsoft/TRELLIS.2-4B \

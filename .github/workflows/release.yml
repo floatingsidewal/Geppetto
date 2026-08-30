@@ -46,11 +46,9 @@ jobs:
             required: true
           - target: dgx-spark
             runner: dgx-spark
-            # UNVERIFIED on real hardware. Reported, not release-blocking, until
-            # it has generated a mesh on a DGX Spark at least once. Flip this to
-            # true once it has — an unverified target must never fail silently,
-            # but it also must not hold back the target that does work.
-            required: false
+            # Verified on real GB10 hardware (512³ 171 s, 1024³ 294 s), so a
+            # failure here is now a genuine regression and blocks the release.
+            required: true
 
     name: ${{ matrix.target }}
     runs-on: [self-hosted, "${{ matrix.runner }}"]
@@ -155,13 +153,13 @@ jobs:
           ### Containers
 
           \`\`\`
-          docker pull ghcr.io/${owner_lc}/geppetto:nvidia-cuda-${v}   # x86_64 / sm_89  — verified
-          docker pull ghcr.io/${owner_lc}/geppetto:dgx-spark-${v}     # aarch64 / sm_121 — see caveats
+          docker pull ghcr.io/${owner_lc}/geppetto:nvidia-cuda-${v}   # x86_64 / sm_89   (RTX 6000 Ada, 4090, L40S)
+          docker pull ghcr.io/${owner_lc}/geppetto:dgx-spark-${v}     # aarch64 / sm_121 (DGX Spark, GB10)
           \`\`\`
 
-          The \`dgx-spark\` image is published only when its build and smoke test
-          pass on real GB10 hardware; if it is absent from this release, that
-          target did not pass.
+          Each image is built natively on its own hardware and published only
+          after a smoke test that loads the model and generates a real mesh on
+          that GPU. Both targets are release-blocking.
 
           Weights are not baked in — run \`scripts/fetch-models.sh\` once (~21 GB).
           EOF

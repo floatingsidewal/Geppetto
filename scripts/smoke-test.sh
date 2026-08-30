@@ -23,6 +23,12 @@ log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 pass() { printf '\033[1;32m[pass]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[fail] %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Create the bind-mount targets as this user first. If Docker has to create
+# them for the mount, it makes them root-owned, and the (unprivileged) client
+# then cannot write its results into them — which is what a fresh clone hits,
+# since outputs/ is gitignored.
+mkdir -p outputs inputs
+
 IMAGE="${1:-geppetto:nvidia-cuda}"
 FULL=false
 [[ "${2:-}" == "--full" ]] && FULL=true
@@ -30,7 +36,10 @@ FULL=false
 docker image inspect "$IMAGE" >/dev/null 2>&1 || die "No such image: $IMAGE"
 
 log "Level 1: extensions, CUDA, attention backend  ($IMAGE)"
-docker run --rm --gpus all "$IMAGE" python - <<'PY'
+# -i is mandatory: this program arrives on stdin. Without it `python -` reads
+# EOF, runs nothing, exits 0 — and every assertion below is skipped while the
+# script cheerfully reports a pass.
+docker run --rm -i --gpus all "$IMAGE" python - <<'PY'
 import os, sys, importlib
 
 failures = []
@@ -132,7 +141,10 @@ for f in outputs/smoke-test/smoke.glb outputs/smoke-test/smoke.stl; do
   [[ -s "$f" ]] || die "Expected artifact missing or empty: $f"
 done
 
-docker run --rm -v "$PWD/outputs/smoke-test:/d" "$IMAGE" python - <<'PY'
+# -i or the program below never reaches the container: python reads EOF, does
+# nothing, exits 0, and the [pass] line below is printed having validated
+# nothing at all.
+docker run --rm -i -v "$PWD/outputs/smoke-test:/d" "$IMAGE" python - <<'PY'
 import sys, trimesh
 for name in ("smoke.glb", "smoke.stl"):
     m = trimesh.load(f"/d/{name}", force="mesh")

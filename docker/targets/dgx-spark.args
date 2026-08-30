@@ -2,26 +2,29 @@
 #
 # aarch64 + NVIDIA GB10 Grace Blackwell (sm_121): DGX Spark and equivalents.
 #
-# STATUS: UNVERIFIED. Written against documented GB10 requirements; nothing here
-# has been built or run on the hardware yet. Three known risks, in order:
+# STATUS: VERIFIED end to end on a DGX Spark (Ubuntu 24.04, driver 580.173.02).
+#   torch 2.13.0+cu130 · xformers 0.0.35 · all six CUDA extensions compiled for
+#   sm_121 · 512³ in 171 s, 1024³ in 294 s, both producing valid meshes.
 #
-#  1. sm_121 kernels. Stock PyTorch wheels compile only to sm_120, leaving GB10
-#     on PTX JIT. Simple ops work; diffusion sampling — which is exactly what
-#     TRELLIS.2 does — has been reported to hang indefinitely in JIT. If that
-#     happens, point TORCH_INDEX_URL at an sm_121-native build.
-#  2. Sparse attention has no soft fallback. trellis2/modules/sparse/config.py
-#     accepts only xformers / flash_attn / flash_attn_3 — no sdpa, no naive. No
-#     flash-attn wheel exists for aarch64+sm_121 and FA2 targets sm_80/sm_90,
-#     so this target builds xformers from source. If xformers will not build
-#     for sm_121, this target does not run, full stop.
-#  3. The six CUDA extensions (nvdiffrast, nvdiffrec, cumesh, flexgemm,
-#     o-voxel) are all source builds against CUDA 13 on arm64. Each is a
-#     separate layer, so failures are isolated and legible.
+# Three risks were identified before the hardware was available. For the record,
+# what actually happened:
 #
-# Expect it to be slower than the nvidia-cuda target regardless: GB10's unified
-# memory runs ~273 GB/s against an RTX 6000 Ada's ~960 GB/s, and this workload
-# is bandwidth-bound. The Spark's advantage is being a dedicated always-on box
-# with 128 GB, not raw speed. VRAM is a non-issue — peak measured is 11.3 GB.
+#  1. sm_121 kernels — NOT a problem. Stock wheels were reported to compile only
+#     to sm_120, leaving GB10 on PTX JIT, with diffusion sampling hanging
+#     indefinitely. torch 2.13.0+cu130 runs it without incident.
+#  2. Sparse attention — NOT a problem, but it remains the load-bearing
+#     dependency. trellis2/modules/sparse/config.py accepts only xformers /
+#     flash_attn / flash_attn_3 — no sdpa, no naive. There is no flash-attn
+#     wheel for aarch64+sm_121, so this target relies on xformers, which builds
+#     from source cleanly. If that ever breaks, this target cannot run at all.
+#  3. The CUDA extensions — NOT a problem. nvdiffrast, nvdiffrec, cumesh,
+#     flexgemm and o-voxel all compile against CUDA 13 on arm64.
+#
+# Expect roughly 1.4–2.5× the workstation's times: GB10's unified memory runs
+# ~273 GB/s against an RTX 6000 Ada's ~960 GB/s, and this workload is
+# bandwidth-bound. The Spark's advantage is 121 GB of unified memory on a
+# dedicated always-on box, not raw speed. VRAM is a non-issue — peak measured
+# there is 4.1 GB at 1024³.
 BASE_IMAGE=nvidia/cuda:13.0.0-devel-ubuntu24.04
 CUDA_ARCH=12.1
 PYTHON_VERSION=3.12

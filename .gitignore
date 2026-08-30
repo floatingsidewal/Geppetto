@@ -1,7 +1,8 @@
 # ---------------------------------------------------------------------------
 # Project runtime data
 # ---------------------------------------------------------------------------
-outputs/
+outputs/*
+!outputs/.gitkeep
 models/
 inputs/*
 !inputs/.gitkeep
@@ -114,3 +115,11 @@ $RECYCLE.BIN/
 .directory
 .Trash-*
 .nfs*
+
+# Test artwork that is not ours to publish: the statue comparison derives from a
+# watermarked stock photo, and the Pinocchio images are a colourised version of
+# Mazzanti's 1883 illustration whose colourisation may carry its own claim.
+# Useful locally for testing; not for a public repo.
+docs/images/
+docs/test-statue.png
+docs/hero-pinocchio.png

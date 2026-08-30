@@ -27,7 +27,10 @@ x-geppetto-common: &geppetto-common
       CUDA_ARCH: ${CUDA_ARCH:-8.9}
       PYTHON_VERSION: ${PYTHON_VERSION:-3.10}
       GEPPETTO_TARGET: ${GEPPETTO_TARGET:-nvidia-cuda}
-  image: ${GEPPETTO_IMAGE:-geppetto:nvidia-cuda}
+  # Defaults to the image for GEPPETTO_TARGET, so a DGX Spark picks up
+  # geppetto:dgx-spark rather than silently trying to BUILD the x86 target on
+  # arm64 — which is what a hardcoded default does, and it looks like a hang.
+  image: ${GEPPETTO_IMAGE:-geppetto:${GEPPETTO_TARGET:-nvidia-cuda}}
   environment: &geppetto-env
     HF_HOME: /models
     HF_TOKEN: ${HF_TOKEN:-}
@@ -50,6 +53,10 @@ x-geppetto-common: &geppetto-common
     - ./inputs:/inputs:ro
   shm_size: "16gb"
   ipc: host
+  # Run an init as PID 1. uvicorn does not reap children, and the CUDA/model
+  # stack spawns plenty; without this, exiting containers can end up unkillable
+  # zombies that block `compose up` from recreating them.
+  init: true
   restart: unless-stopped
 
 services:
@@ -57,6 +64,16 @@ services:
   api:
     <<: *geppetto-common
     container_name: geppetto-api
+    environment:
+      <<: *geppetto-env
+      # GPU selection, done where it actually holds. `deploy.device_ids` maps to
+      # a CDI device (nvidia.com/gpu=N); under WSL2 that is unresolvable and
+      # Docker silently falls back to exposing EVERY GPU — verified, and
+      # NVIDIA_VISIBLE_DEVICES does not filter there either, because /dev/dxg
+      # hands the container all adapters. CUDA_VISIBLE_DEVICES is honoured by
+      # PyTorch regardless of what the runtime exposed, so it is what makes
+      # GPU_ID and the scale profile real rather than decorative.
+      CUDA_VISIBLE_DEVICES: ${GPU_ID:-0}
     ports:
       - "${API_PORT:-8080}:8000"
     deploy:
@@ -82,6 +99,7 @@ services:
     working_dir: /opt/TRELLIS.2
     environment:
       <<: *geppetto-env
+      CUDA_VISIBLE_DEVICES: ${GPU_ID:-0}
       GRADIO_SERVER_NAME: "0.0.0.0"
       GRADIO_SERVER_PORT: "7860"
     command: ["python", "app.py"]
@@ -103,6 +121,9 @@ services:
     <<: *geppetto-common
     container_name: geppetto-api2
     profiles: ["scale"]
+    environment:
+      <<: *geppetto-env
+      CUDA_VISIBLE_DEVICES: ${GPU_ID_2:-1}
     ports:
       - "${API_PORT_2:-8081}:8000"
     deploy:

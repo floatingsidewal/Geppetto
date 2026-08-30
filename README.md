@@ -38,7 +38,7 @@ textured 3D asset with real PBR materials, plus a printable STL.
 | Target | Hardware | Status |
 |---|---|---|
 | `nvidia-cuda` | x86_64 + NVIDIA Ada (sm_89) — RTX 6000 Ada, 4090, L40S | **Verified** end to end |
-| `dgx-spark` | aarch64 + GB10 Grace Blackwell (sm_121) — DGX Spark | **Unverified** — see [`docker/targets/dgx-spark.args`](docker/targets/dgx-spark.args) |
+| `dgx-spark` | aarch64 + GB10 Grace Blackwell (sm_121) — DGX Spark | **Verified** end to end |
 
 Both come from one Dockerfile; everything that differs is a build arg, so the two cannot silently drift apart.
 
@@ -61,6 +61,7 @@ docker pull ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [The web UI](#the-web-ui)
+- [Choosing an input image](#choosing-an-input-image)
 - [Using the API](#using-the-api)
 - [Batch conversion](#batch-conversion)
 - [Parameter guide](#parameter-guide)
@@ -312,6 +313,34 @@ Drag an image in, choose detail and which formats you want, and press **Make it 
 
 > The service has **no authentication**. Anything that can reach the port can drive the GPU. Keep it on a trusted network, or put a reverse proxy with auth in front of it — CORS is not a security control.
 
+## Choosing an input image
+
+![A 3D-printed halligan hook photographed on a wall, and the model Geppetto reconstructed from it](docs/test-halligan.png)
+
+*One photo in, one mesh out — the print layer lines survive into the reconstruction.*
+
+TRELLIS.2 infers three dimensions from the depth cues in a photograph: shading, occlusion,
+perspective, the way light falls across a surface. That shapes what works.
+
+**Works well**
+
+- Photographs of real objects, especially a single subject against a plain background
+- Even lighting that reveals form; hard shadows and blown highlights both hide geometry
+- Product-style shots, three-quarter angles, objects photographed on a table or held up
+
+**Works poorly**
+
+- **Line art, flat illustrations and diagrams.** There are no depth cues to read, and the result
+  is usually a shapeless blob wearing the drawing's colours. We tried a 19th-century pen-and-ink
+  illustration; the output was unusable.
+- **Scenes rather than objects.** Background removal has to pick one subject. A drawing containing
+  a figure, a fox, a snail, trees and a distant fish gives it nothing to lock onto.
+- Heavy motion blur, very low resolution, or subjects mostly hidden behind something else
+
+If a result disappoints, re-shoot before re-running: a cleaner photograph beats a higher
+`resolution` setting almost every time. Changing the seed also changes the result — the same input
+at the same settings varies noticeably between runs.
+
 ## Using the API
 
 All GPU work is serialized behind one worker thread, so submissions queue rather than thrash the device.
@@ -450,11 +479,24 @@ Two things worth knowing before reading too much into these:
 
 ### `dgx-spark` — GB10 Grace Blackwell (sm_121), xformers
 
-**Not yet measured** — pending hardware access. Expect it to be *slower* than the workstation figures
-despite newer silicon: GB10's unified memory runs around 273 GB/s against the RTX 6000 Ada's ~960
-GB/s, and this workload is bandwidth-bound. The Spark's advantages are being a dedicated always-on
-box with 128 GB of unified memory, not raw throughput. This table will be replaced with real numbers
-once the target has run.
+Measured on a DGX Spark, same images and settings as above.
+
+| Settings | Measured, end to end | Peak VRAM | vs RTX 6000 Ada |
+|---|---|---|---|
+| 512³, texture 2048 | 171 s | 2.7 GB | 1.4× slower |
+| 1024³, texture 2048 | 294 s | 4.1 GB | 2.5× slower |
+
+Slower than the workstation despite newer silicon, and the reason is bandwidth:
+GB10's unified memory runs around 273 GB/s against the RTX 6000 Ada's ~960 GB/s, and this workload
+is bandwidth-bound. What the Spark offers instead is 121 GB of unified memory on a dedicated,
+always-on box that idles at a fraction of the power.
+
+Two things that were expected to be problems and were not:
+
+- **No PTX-JIT hang.** Diffusion sampling on sm_121 was reported to hang indefinitely with wheels
+  built only to sm_120. With torch 2.13.0+cu130 it simply runs.
+- **xformers built from source without incident**, which matters because sparse attention has no
+  soft fallback — that dependency failing would have meant the target could not run at all.
 
 ### Benchmarking your own machine
 
@@ -545,7 +587,7 @@ ghcr.io/floatingsidewal/geppetto:nvidia-cuda-v1.0.0    ghcr.io/floatingsidewal/g
 ghcr.io/floatingsidewal/geppetto:dgx-spark-v1.0.0      ghcr.io/floatingsidewal/geppetto:dgx-spark-latest
 ```
 
-Nothing publishes without passing its smoke test. The `dgx-spark` target is non-blocking until it has generated a mesh on real GB10 hardware at least once — an unverified target must not hold back the one that works, and must not fail silently either.
+Nothing publishes without passing its smoke test, and both targets are now release-blocking — each has been verified end to end on its own hardware.
 
 ## Troubleshooting
 
