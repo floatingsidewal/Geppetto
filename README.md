@@ -208,6 +208,19 @@ A completed job reports its stage timings, the seed actually used, peak VRAM, fa
 }
 ```
 
+### Output formats
+
+GLB is always written — it is the only supported format that carries the generated PBR texture.
+Pass `export_formats` to also write the same mesh as STL, OBJ, or PLY:
+
+```bash
+curl -X POST localhost:8080/v1/generate   -F image=@inputs/bracket.png   -F 'params={"export_formats":["stl"]}'
+```
+
+STL is geometry only, which is what a slicer wants; OBJ and PLY keep vertex colours but not the
+texture map. The conversion runs off the already-generated mesh, so it costs seconds, not another
+generation pass.
+
 ### Endpoints
 
 | Method | Path | Purpose |
@@ -216,7 +229,8 @@ A completed job reports its stage timings, the seed actually used, peak VRAM, fa
 | `POST` | `/v1/generate` | Submit an image → `202` with a job id |
 | `GET` | `/v1/jobs` | Recent jobs |
 | `GET` | `/v1/jobs/{id}` | Job state, timings, warnings, errors |
-| `GET` | `/v1/jobs/{id}/asset.glb` | The mesh |
+| `GET` | `/v1/jobs/{id}/asset.glb` | The mesh (textured) |
+| `GET` | `/v1/jobs/{id}/asset.{stl,obj,ply}` | The mesh in another format, when `export_formats` asked for it |
 | `GET` | `/v1/jobs/{id}/preview.mp4` | Turntable render (if requested) |
 | `GET` | `/v1/jobs/{id}/input.png` | The normalized input |
 | `DELETE` | `/v1/jobs/{id}` | Delete the job and its artifacts |
@@ -231,9 +245,11 @@ Job records are written to `outputs/{job_id}/job.json`, so they survive a restar
 python3 scripts/convert.py inputs/                --resolution 1024
 python3 scripts/convert.py inputs/cutouts/        --no-preprocess --skip-existing
 python3 scripts/convert.py inputs/hero-shot.png   --resolution 1536 --texture-size 4096 --preview
+python3 scripts/convert.py inputs/bracket.png     --format stl          # for 3D printing
 ```
 
-It waits for the model to finish loading, submits each image in turn, downloads the GLBs, prints a per-image summary, and writes `conversion-summary.json` with timings and seeds.
+It waits for the model to finish loading, submits each image in turn, downloads the GLBs (plus any
+`--format stl/obj/ply` conversions), prints a per-image summary, and writes `conversion-summary.json` with timings and seeds.
 
 ## Parameter guide
 

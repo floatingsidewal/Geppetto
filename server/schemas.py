@@ -77,6 +77,18 @@ class GenerateParams(BaseModel):
     texture_size: Literal[1024, 2048, 4096] = 2048
     remesh: bool = True
 
+    # --- Additional mesh formats ---
+    # GLB is always written (it is the only format that carries the PBR
+    # texture). These are converted from it, so they cost seconds, not minutes.
+    export_formats: list[Literal["stl", "obj", "ply"]] = Field(
+        default_factory=list,
+        description=(
+            "Extra mesh formats to write alongside the GLB. STL is geometry "
+            "only (no colour) and is the usual choice for 3D printing; OBJ and "
+            "PLY keep vertex colours."
+        ),
+    )
+
     # --- Extras ---
     preview_video: bool = Field(
         False, description="Also render a PBR turntable MP4 (adds significant time)."
@@ -96,6 +108,9 @@ class GenerateParams(BaseModel):
 
 class JobArtifacts(BaseModel):
     glb: str | None = None
+    stl: str | None = None
+    obj: str | None = None
+    ply: str | None = None
     preview_video: str | None = None
     input_image: str | None = None
 

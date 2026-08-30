@@ -121,6 +121,14 @@ async def generate(
         img.load()
     except UnidentifiedImageError as exc:
         raise HTTPException(400, "Could not decode the uploaded file as an image.") from exc
+    except Exception as exc:  # noqa: BLE001
+        # A broken/missing format plugin raises whatever it likes (a bad Pillow
+        # build made WebP throw AttributeError on import). That is still a bad
+        # upload from the caller's side, not a server fault — say which file
+        # and why, with a 400, instead of an opaque 500.
+        raise HTTPException(
+            400, f"Could not decode {image.filename or 'the upload'}: {type(exc).__name__}: {exc}"
+        ) from exc
 
     # Normalize to RGBA PNG on disk: the pipeline's preprocessor expects to be
     # able to read an alpha channel when preprocess_image is disabled.
@@ -181,6 +189,22 @@ def _artifact(job_id: str, filename: str, media_type: str) -> FileResponse:
 @app.get("/v1/jobs/{job_id}/asset.glb")
 def get_glb(job_id: str) -> FileResponse:
     return _artifact(job_id, "asset.glb", "model/gltf-binary")
+
+
+_MESH_MEDIA_TYPES = {
+    "stl": "model/stl",
+    "obj": "model/obj",
+    "ply": "application/octet-stream",
+}
+
+
+@app.get("/v1/jobs/{job_id}/asset.{ext}")
+def get_mesh(job_id: str, ext: str) -> FileResponse:
+    """STL/OBJ/PLY, when the job asked for them via `export_formats`."""
+    media_type = _MESH_MEDIA_TYPES.get(ext.lower())
+    if media_type is None:
+        raise HTTPException(404, f"Unsupported mesh format: {ext}")
+    return _artifact(job_id, f"asset.{ext.lower()}", media_type)
 
 
 @app.get("/v1/jobs/{job_id}/preview.mp4")

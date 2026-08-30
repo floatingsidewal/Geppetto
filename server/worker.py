@@ -266,6 +266,19 @@ class Engine:
         job.timings["export"] = round(time.time() - t0, 2)
         job.artifacts.glb = f"/v1/jobs/{job.id}/asset.glb"
         job.glb_bytes = glb_path.stat().st_size
+
+        # Extra formats are converted from the in-memory scene. STL/OBJ/PLY
+        # cannot carry the PBR material, so the texture is lost by definition —
+        # say so rather than letting it surprise someone downstream.
+        for fmt in p.export_formats:
+            try:
+                out_path = workdir / f"asset.{fmt}"
+                glb.export(str(out_path))
+                setattr(job.artifacts, fmt, f"/v1/jobs/{job.id}/asset.{fmt}")
+            except Exception as exc:  # noqa: BLE001
+                job.warnings.append(f"{fmt.upper()} export failed: {exc}")
+        if "stl" in p.export_formats:
+            job.warnings.append("STL carries geometry only — the texture is in the GLB.")
         try:
             job.face_count = int(mesh.faces.shape[0])
         except Exception:  # noqa: BLE001

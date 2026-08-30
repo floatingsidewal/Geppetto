@@ -38,6 +38,10 @@ def main() -> int:
     ap.add_argument("--preview", action="store_true", help="Also render a turntable MP4.")
     ap.add_argument("--texture-size", type=int, choices=[1024, 2048, 4096], default=2048)
     ap.add_argument("--decimation", type=int, default=500_000, help="Target face count.")
+    ap.add_argument("--format", dest="formats", action="append",
+                    choices=["stl", "obj", "ply"], default=[],
+                    help="Also write this format next to the GLB (repeatable). "
+                         "STL is geometry only — use it for 3D printing.")
     ap.add_argument("--steps", type=int, help="Override sampling steps for all three stages.")
     ap.add_argument("--skip-existing", action="store_true",
                     help="Do not re-convert images whose GLB already exists.")
@@ -58,6 +62,7 @@ def main() -> int:
         "texture_size": args.texture_size,
         "decimation_target": args.decimation,
         "preview_video": args.preview,
+        "export_formats": args.formats,
     }
     if args.seed is not None:
         params["seed"] = args.seed
@@ -105,6 +110,9 @@ def main() -> int:
             continue
 
         client.download(job_id, "asset.glb", glb_dest)
+        for fmt in args.formats:
+            if job["artifacts"].get(fmt):
+                client.download(job_id, f"asset.{fmt}", args.out / f"{image.stem}.{fmt}")
         if args.preview and job["artifacts"].get("preview_video"):
             client.download(job_id, "preview.mp4", args.out / f"{image.stem}.mp4")
 
