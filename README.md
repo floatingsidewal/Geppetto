@@ -49,6 +49,12 @@ docker pull ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
 > **Status:** research / hobbyist deployment. Read [Licensing](#licensing--what-you-can-actually-do-with-this)
 > before this touches anything commercial — the answer is genuinely not "it's MIT, go ahead".
 
+
+---
+
+> Also: if STL's generated don't work with your printing or other scenarios, try running them thru this free repair tool:
+> https://www.formware.co/onlinestlrepair
+
 ---
 
 ## Table of contents
