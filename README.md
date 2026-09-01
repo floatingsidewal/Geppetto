@@ -49,6 +49,12 @@ the command line, the API, or an agent.
 > **Status:** research / hobbyist deployment. Read [Licensing](#licensing--what-you-can-actually-do-with-this)
 > before this touches anything commercial — the answer is genuinely not "it's MIT, go ahead".
 
+
+---
+
+> Also: if STL's generated don't work with your printing or other scenarios, try running them thru this free repair tool:
+> https://www.formware.co/onlinestlrepair
+
 ---
 
 ## Table of contents
@@ -379,7 +385,8 @@ curl -X POST localhost:8080/v1/generate   -F image=@inputs/bracket.png   -F 'par
 ```
 
 STL is geometry only, which is what a slicer wants; OBJ and PLY keep vertex colours but not the
-texture map. The conversion runs off the already-generated mesh, so it costs seconds, not another
+texture map. Generated meshes are not watertight — if a slicer objects, repair it there or with
+[Formware's free online STL repair](https://www.formware.co/onlinestlrepair). The conversion runs off the already-generated mesh, so it costs seconds, not another
 generation pass.
 
 ### Endpoints

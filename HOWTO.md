@@ -402,7 +402,9 @@ dictates what works.
   more predictable, and never loads the non-commercial RMBG-2.0 weights.
 - The seed changes the result. The same image at the same settings varies noticeably between runs —
   if one attempt disappoints, run it again before changing anything.
-- Meshes are **not watertight**. For anything structural, expect a repair pass in your slicer.
+- Meshes are **not watertight**. For anything structural, expect a repair pass. Your slicer can
+  usually do it, and [Formware's free online STL repair](https://www.formware.co/onlinestlrepair)
+  handles the cases it cannot.
 
 ### What to expect, measured
 
@@ -454,6 +456,10 @@ building it.
 **Permission denied writing to `outputs/`**
 Docker created the directory as root. Fix with
 `docker run --rm -v "$PWD:/w" alpine chown -R "$(id -u):$(id -g)" /w/outputs`.
+
+**The STL will not slice, or the printer rejects it**
+Generated meshes are not watertight. Repair it in your slicer, or with
+[Formware's free online STL repair](https://www.formware.co/onlinestlrepair).
 
 **Out of memory during generation**
 Lower `--resolution`, then `--texture-size`. 512³ peaks at 2.6 GB.
