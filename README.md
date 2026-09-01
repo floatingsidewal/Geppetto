@@ -40,11 +40,11 @@ textured 3D asset with real PBR materials, plus a printable STL.
 | `nvidia-cuda` | x86_64 + NVIDIA Ada (sm_89) — RTX 6000 Ada, 4090, L40S | **Verified** end to end |
 | `dgx-spark` | aarch64 + GB10 Grace Blackwell (sm_121) — DGX Spark | **Verified** end to end |
 
-Both come from one Dockerfile; everything that differs is a build arg, so the two cannot silently drift apart.
+Both come from one Dockerfile; everything that differs is a build arg, so the two cannot silently
+drift apart. Each machine builds its own image — about 15 minutes, no published containers to pull.
 
-```bash
-docker pull ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
-```
+**→ [HOWTO.md](HOWTO.md) is the step-by-step guide**: build, install, and use it from the browser,
+the command line, the API, or an agent.
 
 > **Status:** research / hobbyist deployment. Read [Licensing](#licensing--what-you-can-actually-do-with-this)
 > before this touches anything commercial — the answer is genuinely not "it's MIT, go ahead".
@@ -69,6 +69,7 @@ docker pull ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
 - [Repository layout](#repository-layout)
 - [How the image is built](#how-the-image-is-built)
 - [Building and releasing](#building-and-releasing)
+- [HOWTO — the practical guide](HOWTO.md)
 - [Troubleshooting](#troubleshooting)
 - [Scaling to more than one GPU](#scaling-to-more-than-one-gpu)
 - [Related work and alternatives](#related-work-and-alternatives)
@@ -234,43 +235,25 @@ envelope and flash-attention works natively there.
 
 ## Quick start
 
-### Option A — run a published container
-
-The images carry the server, the web UI and the CLI client. Nothing to build.
+The full walkthrough — including host preparation, the WSL2 gotchas, and every way to use it — is in
+**[HOWTO.md](HOWTO.md)**. The short version:
 
 ```bash
 # 0. Request access to the gated models FIRST — DINOv3 is reviewed by a human
 #    and can take hours to days. See "Gated dependencies" above.
 
-# 1. Fetch the image for your hardware
-docker pull ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest   # x86_64 + Ada (sm_89)
-# docker pull ghcr.io/floatingsidewal/geppetto:dgx-spark-latest   # aarch64 + GB10 (sm_121)
-
-# 2. Download the weights once (~21 GB) into a named volume
-echo "HF_TOKEN=hf_your_token_here" > .env
-GEPPETTO_IMAGE=ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest bash scripts/fetch-models.sh
-
-# 3. Run it
-docker run -d --name geppetto --gpus all -p 8080:8000   -v trellis2-models:/models -v "$PWD/outputs:/outputs"   ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
-```
-
-Open **http://localhost:8080/app**. The model takes ~90 seconds to load; `/healthz` reports
-`"model_loaded": true` when it is ready.
-
-### Option B — build from source
-
-```bash
-# 1. One-time host preparation: Docker Engine + NVIDIA Container Toolkit
 git clone https://github.com/floatingsidewal/Geppetto.git && cd Geppetto
+
+# 1. One-time host preparation: Docker Engine + NVIDIA Container Toolkit
 sudo bash scripts/host-setup.sh
 #    then open a NEW shell so docker group membership applies
 
 # 2. Configure
 cp .env.example .env
-$EDITOR .env                      # set HF_TOKEN
+$EDITOR .env                      # set HF_TOKEN (and GEPPETTO_TARGET on a DGX Spark)
 
-# 3. Build for your hardware (~10 min on 16 cores; it compiles six CUDA extensions)
-bash scripts/build.sh nvidia-cuda
+# 3. Build for your hardware (~15 min; it compiles six CUDA extensions)
+bash scripts/build.sh nvidia-cuda          # or: dgx-spark
 
 # 4. Verify the build before trusting it
 bash scripts/smoke-test.sh geppetto:nvidia-cuda
@@ -280,9 +263,11 @@ bash scripts/fetch-models.sh
 docker compose up -d
 ```
 
-Interactive API docs are at http://localhost:8080/docs.
+Then open **<http://localhost:8080/app>**. The model takes ~90 seconds to load.
 
-Optional: the upstream Gradio demo, unmodified, on http://localhost:7860 — note this starts a
+Interactive API docs are at <http://localhost:8080/docs>.
+
+Optional: the upstream Gradio demo, unmodified, on <http://localhost:7860> — note this starts a
 **second container that loads its own copy of the model**. The built-in web UI at `/app` needs no
 extra process.
 
@@ -544,7 +529,7 @@ Geppetto/
 │   ├── make-hero.sh           # regenerate the README banner from a real conversion
 │   └── trellis_client.py      # stdlib-only API client shared by the scripts
 ├── skills/geppetto/SKILL.md   # agent skill for Claude / Copilot
-├── .github/workflows/         # build both targets on self-hosted runners, publish to GHCR
+├── HOWTO.md                   # build, install and use — the practical guide
 ├── docs/                      # README artwork
 ├── inputs/                    # drop source images here (gitignored)
 └── outputs/                   # job artifacts (gitignored)
@@ -574,26 +559,22 @@ Geppetto/
 
 ## Building and releasing
 
-Target definitions live in `docker/targets/*.args` — one file per target, the single source of truth for base image, CUDA arch, Python version, torch index and attention backend.
+Target definitions live in `docker/targets/*.args` — one file per target, the single source of truth
+for base image, CUDA arch, Python version, torch index and attention backend.
 
 ```bash
-bash scripts/build.sh nvidia-cuda          # build for this machine
+bash scripts/build.sh nvidia-cuda                        # build for this machine
 bash scripts/smoke-test.sh geppetto:nvidia-cuda          # imports, CUDA, backends
 bash scripts/smoke-test.sh geppetto:nvidia-cuda --full   # + generate a real mesh
 ```
 
-`build.sh` refuses to build a target on the wrong CPU architecture rather than wasting a long compile — cross-building these CUDA extensions under emulation is not practical, so **each target is built on its own hardware**.
+`build.sh` refuses to build a target on the wrong CPU architecture rather than wasting a long
+compile — cross-building these CUDA extensions under emulation is not practical, so **each target is
+built on its own hardware**.
 
-### Releases
-
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds both targets on self-hosted runners (labelled `ark` and `dgx-spark`), smoke-tests each against a real GPU, and publishes to GHCR:
-
-```
-ghcr.io/floatingsidewal/geppetto:nvidia-cuda-v1.0.0    ghcr.io/floatingsidewal/geppetto:nvidia-cuda-latest
-ghcr.io/floatingsidewal/geppetto:dgx-spark-v1.0.0      ghcr.io/floatingsidewal/geppetto:dgx-spark-latest
-```
-
-Nothing publishes without passing its smoke test, and both targets are now release-blocking — each has been verified end to end on its own hardware.
+There is no CI and no published container registry: this is a small project for a handful of
+machines, and a build is ~15 minutes. To hand a built image to someone with matching hardware, see
+[sharing the built container](HOWTO.md#sharing-the-built-container).
 
 ## Troubleshooting
 
