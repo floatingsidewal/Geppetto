@@ -41,7 +41,15 @@ textured 3D asset with real PBR materials, plus a printable STL.
 | `dgx-spark` | aarch64 + GB10 Grace Blackwell (sm_121) — DGX Spark | **Verified** end to end |
 
 Both come from one Dockerfile; everything that differs is a build arg, so the two cannot silently
-drift apart. Each machine builds its own image — about 15 minutes, no published containers to pull.
+drift apart.
+
+A **prebuilt `dgx-spark` image is published** and needs no build:
+
+```bash
+docker pull ghcr.io/floatingsidewal/geppetto:dgx-spark-latest
+```
+
+The `nvidia-cuda` target is not published — build it locally, about 15 minutes.
 
 **→ [HOWTO.md](HOWTO.md) is the step-by-step guide**: build, install, and use it from the browser,
 the command line, the API, or an agent.
@@ -258,10 +266,14 @@ sudo bash scripts/host-setup.sh
 cp .env.example .env
 $EDITOR .env                      # set HF_TOKEN (and GEPPETTO_TARGET on a DGX Spark)
 
-# 3. Build for your hardware (~15 min; it compiles six CUDA extensions)
-bash scripts/build.sh nvidia-cuda          # or: dgx-spark
+# 3. Get the image.
+#    DGX Spark — pull the published one, no build:
+export GEPPETTO_IMAGE=ghcr.io/floatingsidewal/geppetto:dgx-spark-latest
+docker pull $GEPPETTO_IMAGE
+#    Anything else (~15 min; it compiles six CUDA extensions):
+bash scripts/build.sh nvidia-cuda
 
-# 4. Verify the build before trusting it
+# 4. Verify it before trusting it (pass whichever image you got above)
 bash scripts/smoke-test.sh geppetto:nvidia-cuda
 
 # 5. Weights (~21 GB, once) and run
@@ -579,9 +591,28 @@ bash scripts/smoke-test.sh geppetto:nvidia-cuda --full   # + generate a real mes
 compile — cross-building these CUDA extensions under emulation is not practical, so **each target is
 built on its own hardware**.
 
-There is no CI and no published container registry: this is a small project for a handful of
-machines, and a build is ~15 minutes. To hand a built image to someone with matching hardware, see
-[sharing the built container](HOWTO.md#sharing-the-built-container).
+There is no CI. Images are built on the target hardware, smoke-tested there, and pushed by hand:
+
+```bash
+bash scripts/smoke-test.sh geppetto:dgx-spark --full     # must pass before publishing
+docker tag geppetto:dgx-spark ghcr.io/floatingsidewal/geppetto:dgx-spark-latest
+docker push ghcr.io/floatingsidewal/geppetto:dgx-spark-latest
+```
+
+Published tags are target-prefixed — there is no bare `:latest`, because these images are
+architecture-specific and a shared tag would hand an unrunnable image to half the machines. Alongside
+the moving `dgx-spark-latest`, each push also gets a commit-pinned tag (`dgx-spark-<short-sha>`) so a
+given image can be traced back to the source it was built from.
+
+Currently published:
+
+| Tag | Hardware | Built from |
+|---|---|---|
+| `ghcr.io/floatingsidewal/geppetto:dgx-spark-latest` | aarch64 / sm_121 | commit `f713160` |
+| `ghcr.io/floatingsidewal/geppetto:dgx-spark-f713160` | aarch64 / sm_121 | commit `f713160` |
+
+The `nvidia-cuda` target has no published image. To hand a locally built one to someone with matching
+hardware, see [sharing the built container](HOWTO.md#sharing-the-built-container).
 
 ## Troubleshooting
 

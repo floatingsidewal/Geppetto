@@ -9,7 +9,7 @@ measured, not estimated.
 - [Before you start](#before-you-start)
 - [Step 1 — request model access](#step-1--request-model-access-do-this-first)
 - [Step 2 — prepare the host](#step-2--prepare-the-host)
-- [Step 3 — build the container](#step-3--build-the-container)
+- [Step 3 — get the container](#step-3--get-the-container)
 - [Step 4 — download the weights](#step-4--download-the-weights)
 - [Step 5 — start it](#step-5--start-it)
 - [Using it: the web UI](#using-it-the-web-ui)
@@ -154,22 +154,41 @@ Verified: 24/24 health checks pass with this running, 0/20 without.
 
 ---
 
-## Step 3 — build the container
+## Step 3 — get the container
 
-Pick the target for your hardware:
+### On a DGX Spark: pull it
+
+A prebuilt image is published, so there is nothing to compile:
+
+```bash
+docker pull ghcr.io/floatingsidewal/geppetto:dgx-spark-latest
+```
+
+Add it to your `.env` so `docker compose` and the helper scripts all use it:
+
+```bash
+echo 'GEPPETTO_IMAGE=ghcr.io/floatingsidewal/geppetto:dgx-spark-latest' >> .env
+```
+
+The image is public — no `docker login` needed. It is ~15 GB on disk. Weights are **not** included;
+Step 4 still applies.
+
+### Everything else: build it
 
 ```bash
 bash scripts/build.sh nvidia-cuda     # x86_64 + Ada
-bash scripts/build.sh dgx-spark       # DGX Spark
+bash scripts/build.sh dgx-spark       # DGX Spark, if you would rather build than pull
 ```
 
 **Roughly 10–20 minutes.** It compiles six CUDA extensions from source. The script refuses to build
 a target on the wrong CPU architecture rather than wasting the time.
 
-Then verify it before trusting it:
+Then verify it before trusting it — worth doing for a pulled image too, since it proves the image
+matches *your* GPU:
 
 ```bash
-bash scripts/smoke-test.sh geppetto:nvidia-cuda      # or geppetto:dgx-spark
+bash scripts/smoke-test.sh geppetto:nvidia-cuda
+bash scripts/smoke-test.sh ghcr.io/floatingsidewal/geppetto:dgx-spark-latest   # if you pulled
 ```
 
 This asserts that torch sees the GPU, that the GPU matches what the image was built for, that all six
@@ -202,10 +221,11 @@ bash scripts/fetch-models.sh
 ~21 GB into a Docker volume named `trellis2-models`, once per machine. Rebuilding the image does not
 re-download it.
 
-On a DGX Spark, tell it which image to use:
+On a DGX Spark, tell it which image to use (skip this if you already put `GEPPETTO_IMAGE` in `.env`
+in Step 3):
 
 ```bash
-GEPPETTO_IMAGE=geppetto:dgx-spark bash scripts/fetch-models.sh
+GEPPETTO_IMAGE=ghcr.io/floatingsidewal/geppetto:dgx-spark-latest bash scripts/fetch-models.sh
 ```
 
 If DINOv3 access has not been granted yet, this stops and tells you which link to click.
@@ -356,8 +376,14 @@ check the server is healthy, submit the job, wait, and tell you where the files 
 
 ## Sharing the built container
 
-No prebuilt images are published. Each machine builds its own — but you can hand a built image to a
-collaborator with the same hardware instead of making them rebuild:
+For the **DGX Spark** there is nothing to share — point the other machine at the published image:
+
+```bash
+docker pull ghcr.io/floatingsidewal/geppetto:dgx-spark-latest
+```
+
+For `nvidia-cuda`, which is not published, you can hand a built image to a collaborator with the same
+hardware instead of making them rebuild:
 
 ```bash
 # on the machine that has it
@@ -372,7 +398,7 @@ vice versa. They still need their own Hugging Face access and their own `scripts
 run; weights are not in the image.
 
 Honestly, on a decent machine `bash scripts/build.sh` is ~15 minutes against a ~9 GB transfer.
-Building is usually the better answer.
+For the unpublished target, building is usually the better answer.
 
 ---
 
