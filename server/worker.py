@@ -19,17 +19,35 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+import licence_guard
+import matting
 from schemas import GenerateParams, Job, JobArtifacts, JobStatus
 
 log = logging.getLogger("geppetto.worker")
+
+# Before anything imports trellis2 (and through it o_voxel): o_voxel imports
+# nvdiffrast at module level, so without this the model load alone would load
+# a non-commercial component. See licence_guard.py.
+licence_guard.install()
 
 MODEL_ID = os.environ.get("TRELLIS2_MODEL", "microsoft/TRELLIS.2-4B")
 OUTPUT_DIR = Path(os.environ.get("TRELLIS2_OUTPUT_DIR", "/outputs"))
 ENVMAP_PATH = os.environ.get("TRELLIS2_ENVMAP", "/opt/TRELLIS.2/assets/hdri/forest.exr")
 
 # nvdiffrast cannot index more than 2^24 vertices; upstream applies this exact
-# cap before export and so must we.
+# cap before export and so must we. Kept on the open backend too, so both
+# backends export the same mesh (and preview renders still use nvdiffrast).
 NVDIFFRAST_VERTEX_LIMIT = 16_777_216
+
+EXPORT_BACKENDS = ("open", "nvdiffrast")
+
+
+def default_export_backend() -> str:
+    value = os.environ.get("GEPPETTO_EXPORT_BACKEND", "open").strip().lower()
+    if value not in EXPORT_BACKENDS:
+        log.warning("GEPPETTO_EXPORT_BACKEND=%r is not one of %s; using open", value, EXPORT_BACKENDS)
+        return "open"
+    return value
 
 
 def _now() -> str:
@@ -72,6 +90,9 @@ class Engine:
             log.info("Loading %s (this takes several minutes on a cold cache)", MODEL_ID)
             from trellis2.pipelines import Trellis2ImageTo3DPipeline
 
+            # pipeline.json names briaai/RMBG-2.0 and from_pretrained() would
+            # load it now. Swap in a matting stub that loads on first use.
+            matting.install()
             pipeline = Trellis2ImageTo3DPipeline.from_pretrained(MODEL_ID)
             pipeline.cuda()
             self.pipeline = pipeline
@@ -139,12 +160,22 @@ class Engine:
         return True
 
     def stats(self) -> dict:
+        rembg = getattr(self.pipeline, "rembg_model", None)
+        matting_loaded = list(getattr(rembg, "loaded", []))
+        noncommercial = licence_guard.noncommercial_loaded()
+        noncommercial += [
+            matting.MATTING_MODELS[m] for m in matting_loaded if m in matting.NONCOMMERCIAL_MATTING
+        ]
         return {
             "queue_depth": self._queue.qsize(),
             "running_job": self._running_job,
             "jobs_completed": self._completed,
             "jobs_failed": self._failed,
             "uptime_seconds": round(time.time() - self.started_at, 1),
+            "export_backend_default": default_export_backend(),
+            "matting_default": matting.default_matting(),
+            "matting_loaded": matting_loaded,
+            "noncommercial_loaded": noncommercial,
         }
 
     def _persist(self, job: Job) -> None:
@@ -228,6 +259,13 @@ class Engine:
 
         torch.cuda.reset_peak_memory_stats()
 
+        backend = p.export_backend or default_export_backend()
+        job.export_backend = backend
+        rembg = self.pipeline.rembg_model
+        if isinstance(rembg, matting.LazyMatting):
+            rembg.choice = p.matting
+            rembg.last_used = None
+
         # --- Generation ---
         t0 = time.time()
         outputs = self.pipeline.run(
@@ -240,13 +278,23 @@ class Engine:
         )
         mesh = outputs[0]
         job.timings["generate"] = round(time.time() - t0, 2)
+        used = getattr(rembg, "last_used", None)
+        if used:
+            job.matting_model = matting.MATTING_MODELS[used]
+            if used in matting.NONCOMMERCIAL_MATTING:
+                job.noncommercial_components.append(f"{job.matting_model} (background removal)")
 
         # --- Export ---
         t0 = time.time()
-        import o_voxel
+        if backend == "open":
+            from open_export import to_glb
+        else:
+            from o_voxel.postprocess import to_glb
+
+            job.noncommercial_components.append("nvdiffrast (texture bake)")
 
         mesh.simplify(NVDIFFRAST_VERTEX_LIMIT)
-        glb = o_voxel.postprocess.to_glb(
+        glb = to_glb(
             vertices=mesh.vertices,
             faces=mesh.faces,
             attr_volume=mesh.attrs,
@@ -289,6 +337,8 @@ class Engine:
             if self.envmap is None:
                 job.warnings.append("Preview requested but the env map failed to load.")
             else:
+                # Recorded before the attempt: a failed render still ran it.
+                job.noncommercial_components.append("nvdiffrast + nvdiffrec (preview render)")
                 try:
                     t0 = time.time()
                     import imageio

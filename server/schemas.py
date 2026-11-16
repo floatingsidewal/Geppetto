@@ -52,9 +52,18 @@ class GenerateParams(BaseModel):
     preprocess_image: bool = Field(
         True,
         description=(
-            "Run the built-in BiRefNet/RMBG background removal. Set false when the "
-            "input is already a cut-out RGBA — this also avoids needing the gated "
-            "briaai/RMBG-2.0 weights."
+            "Remove the background (see `matting`) unless the image already has "
+            "transparency, then crop to the subject. Set false when the input is "
+            "already a cut-out RGBA: no matting model is ever loaded."
+        ),
+    )
+    matting: Literal["birefnet", "rmbg2"] | None = Field(
+        None,
+        description=(
+            "Background-removal model, used only when `preprocess_image` is true "
+            "and the input is opaque. `birefnet` = ZhengPeng7/BiRefNet (MIT). "
+            "`rmbg2` = briaai/RMBG-2.0 (CC BY-NC 4.0, non-commercial; gated). "
+            "Omit for the server default (GEPPETTO_MATTING, default birefnet)."
         ),
     )
     max_num_tokens: int = Field(49_152, ge=4_096, le=196_608)
@@ -76,6 +85,16 @@ class GenerateParams(BaseModel):
     )
     texture_size: Literal[1024, 2048, 4096] = 2048
     remesh: bool = True
+    export_backend: Literal["open", "nvdiffrast"] | None = Field(
+        None,
+        description=(
+            "How the texture is baked. `open` rasterizes the UV layout in plain "
+            "PyTorch (no non-commercial code). `nvdiffrast` is upstream's bake "
+            "(NVIDIA Source Code License, non-commercial). Same mesh, same UVs, "
+            "same texel values. Omit for the server default "
+            "(GEPPETTO_EXPORT_BACKEND, default open)."
+        ),
+    )
 
     # --- Additional mesh formats ---
     # GLB is always written (it is the only format that carries the PBR
@@ -91,7 +110,11 @@ class GenerateParams(BaseModel):
 
     # --- Extras ---
     preview_video: bool = Field(
-        False, description="Also render a PBR turntable MP4 (adds significant time)."
+        False,
+        description=(
+            "Also render a PBR turntable MP4 (adds significant time). Uses "
+            "nvdiffrast and nvdiffrec (non-commercial) whatever `export_backend` is."
+        ),
     )
 
     def sampler_kwargs(self) -> dict[str, dict[str, Any]]:
@@ -136,6 +159,22 @@ class Job(BaseModel):
     error: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
+    # What actually ran, after server defaults were applied. Jobs written by
+    # older versions leave these empty.
+    export_backend: str | None = None
+    matting_model: str | None = Field(
+        None, description="The background-removal model that ran, or null if none did."
+    )
+    noncommercial_components: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Non-commercial components this job used (docs/LICENSES-MODELS.md). "
+            "Empty means none ran. TRELLIS.2's research-only project-page "
+            "language and DINOv3's licence terms apply to every job and are "
+            "not listed here."
+        ),
+    )
+
 
 class JobCreated(BaseModel):
     job_id: str
@@ -158,3 +197,10 @@ class Health(BaseModel):
     jobs_completed: int
     jobs_failed: int
     uptime_seconds: float
+    export_backend_default: str | None = None
+    matting_default: str | None = None
+    matting_loaded: list[str] = Field(default_factory=list)
+    noncommercial_loaded: list[str] = Field(
+        default_factory=list,
+        description="Non-commercial components whose code or weights are loaded in this process.",
+    )
