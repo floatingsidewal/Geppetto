@@ -9,7 +9,7 @@ Examples
     # A whole folder at full detail, writing GLBs next to a summary table
     python scripts/convert.py inputs/ --resolution 1536 --out outputs/batch-01
 
-    # Pre-cut RGBA cutouts (skips the gated background-removal model)
+    # Pre-cut RGBA cutouts (skips background removal entirely)
     python scripts/convert.py inputs/cutouts/ --no-preprocess
 """
 
@@ -35,7 +35,12 @@ def main() -> int:
     ap.add_argument("--seed", type=int, help="Fixed seed (default: random per image).")
     ap.add_argument("--no-preprocess", action="store_true",
                     help="Input is already a cut-out RGBA; skip background removal.")
-    ap.add_argument("--preview", action="store_true", help="Also render a turntable MP4.")
+    ap.add_argument("--preview", action="store_true",
+                    help="Also render a turntable MP4 (uses nvdiffrast/nvdiffrec: non-commercial).")
+    ap.add_argument("--export-backend", choices=["open", "nvdiffrast"],
+                    help="Texture bake: open (default on the server) or nvdiffrast (non-commercial).")
+    ap.add_argument("--matting", choices=["birefnet", "rmbg2"],
+                    help="Background removal: birefnet (MIT, server default) or rmbg2 (non-commercial).")
     ap.add_argument("--texture-size", type=int, choices=[1024, 2048, 4096], default=2048)
     ap.add_argument("--decimation", type=int, default=500_000, help="Target face count.")
     ap.add_argument("--format", dest="formats", action="append",
@@ -64,6 +69,10 @@ def main() -> int:
         "preview_video": args.preview,
         "export_formats": args.formats,
     }
+    if args.export_backend:
+        params["export_backend"] = args.export_backend
+    if args.matting:
+        params["matting"] = args.matting
     if args.seed is not None:
         params["seed"] = args.seed
         params["randomize_seed"] = False

@@ -6,11 +6,25 @@
 #   bash scripts/fetch-models.sh
 #
 # Run once. After this the container starts offline-clean.
-# Total download: ~19 GB.
+# Total download: ~20 GB.
+#
+#   bash scripts/fetch-models.sh --with-rmbg2   # also fetch briaai/RMBG-2.0
+#
+# The default background remover is ZhengPeng7/BiRefNet (MIT), fetched here.
+# briaai/RMBG-2.0 (CC BY-NC 4.0, non-commercial) is only needed if you opt in
+# to it with GEPPETTO_MATTING=rmbg2 or `"matting": "rmbg2"`.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+WITH_RMBG2=0
+for arg in "$@"; do
+  case "$arg" in
+    --with-rmbg2) WITH_RMBG2=1 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
 
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m[fail] %s\033[0m\n' "$*" >&2; exit 1; }
@@ -36,9 +50,12 @@ docker run --rm -i \
   -e HF_TOKEN="$HF_TOKEN" \
   -e HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
   -e HF_HOME=/models \
+  -e HF_HUB_OFFLINE=0 \
+  -e WITH_RMBG2="$WITH_RMBG2" \
   -v trellis2-models:/models \
   "$IMAGE" \
   python - <<'PY'
+import os
 import sys
 from huggingface_hub import HfApi, snapshot_download
 from huggingface_hub.utils import GatedRepoError, HfHubHTTPError
@@ -59,10 +76,14 @@ TARGETS = [
     ("facebook/dinov3-vitl16-pretrain-lvd1689m", None,
      "image conditioning encoder — GATED, manual approval by Meta",
      "https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m"),
-    ("briaai/RMBG-2.0", None,
-     "background removal — GATED, auto approval, CC BY-NC 4.0",
-     "https://huggingface.co/briaai/RMBG-2.0"),
+    ("ZhengPeng7/BiRefNet", None,
+     "background removal (default matting) — MIT, not gated", None),
 ]
+if os.environ.get("WITH_RMBG2") == "1":
+    TARGETS.append(
+        ("briaai/RMBG-2.0", None,
+         "background removal, opt-in — GATED, auto approval, CC BY-NC 4.0 (non-commercial)",
+         "https://huggingface.co/briaai/RMBG-2.0"))
 
 failed = []
 for repo_id, allow, why, gate_url in TARGETS:
@@ -89,8 +110,8 @@ if failed:
         print(f"  - {repo_id}\n      {reason}\n")
     print("Note: facebook/dinov3-... uses MANUAL approval — Meta reviews the")
     print("request, which can take hours to days. The pipeline cannot run")
-    print("without it. briaai/RMBG-2.0 is auto-approved and only needed when")
-    print("preprocess_image=true; pre-cut RGBA inputs work without it.")
+    print("without it. briaai/RMBG-2.0 is auto-approved and only needed if")
+    print("you opt in to it (GEPPETTO_MATTING=rmbg2).")
     print("=" * 70)
     sys.exit(1)
 
