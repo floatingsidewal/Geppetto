@@ -51,6 +51,12 @@ x-geppetto-common: &geppetto-common
     # so the single-page app works when opened straight off disk (file:// pages
     # send Origin: null). Restrict this if the service leaves a trusted network.
     GEPPETTO_CORS_ORIGINS: ${GEPPETTO_CORS_ORIGINS:-*}
+    # Licence switches (HOWTO.md, "Licence switches"). The defaults run no
+    # non-commercial code: `open` bakes textures without nvdiffrast, and
+    # `birefnet` removes backgrounds with an MIT model. `nvdiffrast` and
+    # `rmbg2` are the non-commercial opt-ins. Requests can override both.
+    GEPPETTO_EXPORT_BACKEND: ${GEPPETTO_EXPORT_BACKEND:-open}
+    GEPPETTO_MATTING: ${GEPPETTO_MATTING:-birefnet}
   volumes:
     - models:/models
     - ./outputs:/outputs

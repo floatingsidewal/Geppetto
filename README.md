@@ -149,7 +149,8 @@ Post-processing (remeshing, decimation, UV unwrapping, texture baking) runs on C
 | nvdiffrast — differentiable rasterization | https://github.com/NVlabs/nvdiffrast |
 | nvdiffrec (renderutils fork) — split-sum PBR | https://github.com/JeffreyXiang/nvdiffrec |
 | DINOv3 — image conditioning encoder | https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m |
-| RMBG-2.0 / BiRefNet — background removal | https://huggingface.co/briaai/RMBG-2.0 |
+| BiRefNet — background removal (default) | https://huggingface.co/ZhengPeng7/BiRefNet · https://github.com/ZhengPeng7/BiRefNet |
+| RMBG-2.0 — background removal (opt-in, non-commercial) | https://huggingface.co/briaai/RMBG-2.0 |
 
 ## Licensing — what you can actually do with this
 
@@ -166,11 +167,15 @@ checked against the upstream licence file or model card, not assumed.
 | `utils3d` | geometry helpers | MIT | Yes |
 | `flash-attn` | attention kernels | BSD-3-Clause | Yes |
 | **`facebook/dinov3-…`** | **image conditioning — required** | **Meta DINOv3 License** | **Yes, with conditions** |
-| `nvdiffrast` | preview rendering only | NVIDIA Source Code License | **No — non-commercial** |
-| `nvdiffrec` (JeffreyXiang fork) | texturing demo only | NVIDIA Source Code License | **No — non-commercial** |
-| `briaai/RMBG-2.0` | background removal — optional | Bria licence (`license:other`) | **No** without a Bria agreement |
+| `ZhengPeng7/BiRefNet` | background removal — **default**, loaded on first use | MIT | Yes |
+| `nvdiffrast` | texture bake on the opt-in `nvdiffrast` export backend; preview video | NVIDIA Source Code License | **No — non-commercial** · off by default |
+| `nvdiffrec` (JeffreyXiang fork) | preview video lighting | NVIDIA Source Code License | **No — non-commercial** · off by default |
+| `briaai/RMBG-2.0` | background removal — **opt-in** (`matting: rmbg2`) | CC BY-NC 4.0 | **No** without a BRIA agreement · off by default |
 | HDRI env maps (Poly Haven) | preview lighting | CC0 | Yes |
-| Geppetto (this repository) | server, UI, client, skill | MIT | Yes |
+| Geppetto (this repository) | server, UI, client, skill, `open` export backend | MIT | Yes |
+
+The full register, covering every library and weight file, which code path loads each one, and
+the open questions, is in **[docs/LICENSES-MODELS.md](docs/LICENSES-MODELS.md)**.
 
 ### What actually binds you
 
@@ -183,19 +188,53 @@ ships containers that pull those weights:
 - Access is gated behind Meta's manual approval, and requires accepting their terms individually.
   Nobody can use Geppetto on your approval — every operator requests their own.
 
-The other two restrictive components **are** removable, which is the useful part:
+The non-commercial components are **off by default** and each sits behind a switch
+([HOWTO: Licence switches](HOWTO.md#licence-switches)):
 
-- **nvdiffrast / nvdiffrec are non-commercial, and the core pipeline never imports them.**
-  `trellis2/pipelines/trellis2_image_to_3d.py` imports only torch, numpy, PIL and internal modules.
-  They exist here for the MP4 turntable preview and the texturing demo. Drop both and you lose the
-  preview video, nothing else.
-- **RMBG-2.0 is only used by `preprocess_image`.** Pass `preprocess_image: false` with a pre-cut RGBA
-  image and it is never loaded — which is also why it is listed as optional in the preflight check.
+- **nvdiffrast baked every texture until this change.** Upstream's GLB export
+  (`o_voxel.postprocess.to_glb`) rasterizes the UV layout with it, and `o_voxel` imports it at
+  module level, so even loading the model loaded it. Geppetto now bakes with its own
+  **`open` export backend** (`server/open_export.py`). It is the same export code, with the UV
+  rasterization done in plain PyTorch. Upstream's bake is still there as
+  `export_backend: "nvdiffrast"`, and the nvdiffrast import is deferred until a job uses it. The
+  preview video still needs nvdiffrast and nvdiffrec, so it stays opt-in.
+- **RMBG-2.0 no longer loads at startup.** Upstream's `pipeline.json` names it, and
+  `from_pretrained()` used to build it eagerly. Background removal now defaults to
+  **BiRefNet** (MIT), the open model RMBG-2.0 is built on, and loads on first use. RMBG-2.0 is
+  available as `matting: "rmbg2"`. With pre-cut RGBA inputs, neither ever loads.
+- Each job records what it ran in `noncommercial_components` (empty by default), and `/healthz`
+  reports `noncommercial_loaded` for the process.
 
-So a commercially-safe configuration exists: drop nvdiffrast/nvdiffrec, feed pre-cut RGBA inputs, and
-comply with the DINOv3 attribution terms. **This is a description of the dependency graph, not legal
-advice** — the TRELLIS.2 project page also carries research-only language that sits awkwardly beside
-its MIT repo licence, and reconciling those is a question for counsel, not a README.
+So the default configuration runs no non-commercial code. You still have to comply with the DINOv3
+terms, including attribution. **This is a description of the dependency graph, not legal
+advice.** The TRELLIS.2 project page also carries research-only language that sits awkwardly
+beside its MIT repo licence. That applies to every job, and reconciling the two is a question for
+counsel, not a README.
+
+### `open` vs `nvdiffrast` export, measured
+
+Measured on 2026-11-16 (RTX 6000 Ada, `scripts/compare-backends.sh`) with three inputs: a photo
+of a model jeep (background removed by BiRefNet), a marble bust (an RGBA cut-out) and a hurricane
+lantern (opaque, no preprocessing). Each mesh was generated once, at 1024³ with seed 42, and
+exported three times from the same mesh: `open` twice, then `nvdiffrast`. The UV unwrap is not
+deterministic, so the two `open` runs show how much any two exports differ anyway.
+
+| Input | `open` vs `nvdiffrast` (render PSNR) | `open` vs `open` (render PSNR) | Pixels differing by > 16/255 | Export time, `open` / `nvdiffrast` |
+|---|---|---|---|---|
+| jeep | 48.6 dB | 48.7 dB | 0.017 % | 82–89 s / 46 s (GPU busy with a build); an earlier run: 52–53 s / 54 s |
+| bust | 50.8 dB | 50.9 dB | 0.002 % | 51–55 s / 38 s |
+| lantern | 51.0 dB | 51.4 dB | 0.015 % | 39–41 s / 57 s |
+
+The backends differ from each other by **no more than two `open` runs differ from each other**,
+and the renders cannot be told apart. The GPU was shared with other work, so export times vary by
+±10 s run to run; neither backend is measurably faster. On the bake itself, the two rasterizers
+agree on 99.5 % or more of texels on real 500k-face layouts. The rest sit on UV-chart borders,
+where nvdiffrast's fill rule and fixed-point snapping differ from plain edge tests, and the seam
+inpainting covers them (`tests/test_open_export.py`).
+
+Background removal: BiRefNet and RMBG-2.0 masks overlap with IoU 0.992 (jeep) and 0.998 (bust).
+On the lantern the IoU is 0.84: BiRefNet removes more of the white wall showing inside the frame,
+which is the better cut-out. Both take about 0.3 s an image.
 
 ### Attribution
 
@@ -203,15 +242,15 @@ Built with DINOv3.
 
 ## Gated dependencies — read this before you build
 
-**TRELLIS.2 cannot run without two gated Hugging Face repositories.** Neither is bundled with the weights, and one of them is reviewed by a human.
+**TRELLIS.2 cannot run without the gated DINOv3 repository**, which is reviewed by a human. A second gated repository, RMBG-2.0, is optional and off by default.
 
 1. **`facebook/dinov3-vitl16-pretrain-lvd1689m`** — the image conditioning encoder named in `pipeline.json`. Gating is **manual**: Meta reviews each request, which can take **hours to days**. There is no workaround — the model was trained against these features. **Request access early.**
    → https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m
 
-2. **`briaai/RMBG-2.0`** — background removal. Gating is automatic (accept the form, get access immediately). Only needed when `preprocess_image=true`; supply pre-cut RGBA images and you can skip it entirely.
+2. **`briaai/RMBG-2.0`** — optional background removal, **non-commercial** (CC BY-NC 4.0). Gating is automatic (accept the form, get access immediately). Only needed if you opt in with `matting: "rmbg2"`; the default remover is `ZhengPeng7/BiRefNet` (MIT, not gated). Fetch it with `scripts/fetch-models.sh --with-rmbg2`.
    → https://huggingface.co/briaai/RMBG-2.0
 
-Accept both with the account that owns your `HF_TOKEN`, then put the token in `.env`. `scripts/fetch-models.sh` verifies access and tells you exactly which link to click if something is missing.
+Accept them with the account that owns your `HF_TOKEN`, then put the token in `.env`. `scripts/fetch-models.sh` verifies access and tells you exactly which link to click if something is missing.
 
 There is also a quiet third dependency: the sparse-structure decoder is pulled from the **original** `microsoft/TRELLIS-image-large` repo, not from TRELLIS.2-4B. The fetch script handles it.
 
@@ -327,7 +366,7 @@ Drag an image in, choose detail and which formats you want, and press **Make it 
 
 *A harder case: two figures, a bench, tools and jointed limbs, all reconstructed from one photograph.
 This one was run with `--no-preprocess` on a pre-cut RGBA image, which skips background removal
-entirely — faster, more predictable, and it never loads the non-commercial RMBG-2.0 weights.*
+entirely — faster, more predictable, and it loads no background-removal model at all.*
 
 TRELLIS.2 infers three dimensions from the depth cues in a photograph: shading, occlusion,
 perspective, the way light falls across a surface. That shapes what works.
@@ -384,7 +423,10 @@ A completed job reports its stage timings, the seed actually used, peak VRAM, fa
   "peak_vram_gb": 21.7,
   "face_count": 498231,
   "glb_bytes": 18446372,
-  "artifacts": { "glb": "/v1/jobs/a1b2c3d4e5f6/asset.glb" }
+  "artifacts": { "glb": "/v1/jobs/a1b2c3d4e5f6/asset.glb" },
+  "export_backend": "open",
+  "matting_model": "ZhengPeng7/BiRefNet",
+  "noncommercial_components": []
 }
 ```
 
@@ -406,7 +448,7 @@ generation pass.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/healthz` | Status, GPU, queue depth, load errors |
+| `GET` | `/healthz` | Status, GPU, queue depth, load errors, default export backend and matting, non-commercial components loaded |
 | `POST` | `/v1/generate` | Submit an image → `202` with a job id |
 | `GET` | `/v1/jobs` | Recent jobs |
 | `GET` | `/v1/jobs/{id}` | Job state, timings, warnings, errors |
@@ -440,11 +482,13 @@ Defaults match upstream's Gradio demo exactly, which in turn match `pipeline.jso
 |---|---|---|
 | `resolution` | `1024` | 512 for iteration, 1024 for production, 1536 when detail genuinely matters. Cost scales steeply. |
 | `seed` / `randomize_seed` | random | The seed actually used is always reported back, so a good result is reproducible. |
-| `preprocess_image` | `true` | Background removal via RMBG-2.0. Set `false` for pre-cut RGBA — faster, and avoids the gated model. |
+| `preprocess_image` | `true` | Background removal (unless the input already has transparency), then crop to the subject. Set `false` for pre-cut RGBA — faster, and no matting model loads. |
+| `matting` | server default: `birefnet` | `birefnet` (ZhengPeng7/BiRefNet, MIT) or `rmbg2` (briaai/RMBG-2.0, non-commercial). Loaded on first use. |
+| `export_backend` | server default: `open` | `open` bakes the texture with Geppetto's PyTorch rasterizer; `nvdiffrast` is upstream's bake (non-commercial). Same mesh and UVs. |
 | `decimation_target` | `500000` | Target face count, 10k–4M. Lower for game engines, higher for offline rendering. |
 | `texture_size` | `2048` | 1024 / 2048 / 4096. |
 | `remesh` | `true` | Clean quad-ish topology. Disabling is faster but the mesh is rawer. |
-| `preview_video` | `false` | PBR turntable MP4. Adds meaningful time; needs nvdiffrast. |
+| `preview_video` | `false` | PBR turntable MP4. Adds meaningful time; runs nvdiffrast and nvdiffrec (non-commercial). |
 | `max_num_tokens` | `49152` | Latent token ceiling. Lower it if you ever hit memory pressure at 1536³. |
 
 Per-stage samplers — `sparse_structure`, `shape`, `texture` — each accept `steps` (1–50), `guidance_strength` (1–10), `guidance_rescale` (0–1) and `rescale_t` (1–6):
@@ -536,6 +580,9 @@ Geppetto/
 │   ├── app.py                 # FastAPI endpoints + the /app web UI route
 │   ├── worker.py              # model lifecycle + single-threaded job queue
 │   ├── schemas.py             # pydantic models; upstream defaults live here
+│   ├── open_export.py         # `open` export backend: GLB bake without nvdiffrast
+│   ├── matting.py             # background removal, loaded on first use (BiRefNet / RMBG-2.0)
+│   ├── licence_guard.py       # defers nvdiffrast's import; reports what non-commercial code ran
 │   ├── static/index.html      # the web UI — one self-contained file, no build step
 │   └── requirements.txt
 ├── scripts/
@@ -547,12 +594,15 @@ Geppetto/
 │   ├── convert.py             # batch 2D→3D client
 │   ├── benchmark.py           # measure this machine
 │   ├── make-hero.sh           # regenerate the README banner from a real conversion
+│   ├── test.sh                # run tests/ in a throwaway container on one GPU
+│   ├── compare-backends.sh    # open vs nvdiffrast export, BiRefNet vs RMBG-2.0, on real inputs
 │   └── trellis_client.py      # stdlib-only API client shared by the scripts
 ├── skills/geppetto/
 │   ├── SKILL.md               # agent skill: /geppetto up | process <file> | process all [dir]
 │   └── geppetto.py            # stdlib-only script the skill runs; starts the server itself
+├── tests/                     # pytest, run inside the image (scripts/test.sh)
 ├── HOWTO.md                   # build, install and use — the practical guide
-├── docs/                      # README artwork
+├── docs/                      # README artwork; LICENSES-MODELS.md (licence register)
 ├── inputs/                    # drop source images here (gitignored)
 └── outputs/                   # job artifacts (gitignored)
 ```

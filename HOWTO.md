@@ -55,9 +55,10 @@ every other step and then wait.
 
 1. **[facebook/dinov3-vitl16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m)**
    — **required.** The image conditioning encoder. Manual approval. Nothing generates without it.
-2. **[briaai/RMBG-2.0](https://huggingface.co/briaai/RMBG-2.0)** — optional, automatic approval.
-   Background removal. Skip it entirely by feeding pre-cut RGBA images (see
-   [Getting good results](#getting-good-results)).
+2. **[briaai/RMBG-2.0](https://huggingface.co/briaai/RMBG-2.0)**: optional, automatic approval,
+   **non-commercial** (CC BY-NC 4.0). Not needed by default: background removal uses
+   [ZhengPeng7/BiRefNet](https://huggingface.co/ZhengPeng7/BiRefNet) (MIT, not gated). Request
+   RMBG-2.0 only if you want it as an opt-in (see [Licence switches](#licence-switches)).
 
 Accept the licences with the account that will own your token, then create a **read** token at
 <https://huggingface.co/settings/tokens>.
@@ -219,7 +220,8 @@ bash scripts/fetch-models.sh
 ```
 
 ~21 GB into a Docker volume named `trellis2-models`, once per machine. Rebuilding the image does not
-re-download it.
+re-download it. This includes the default background remover, BiRefNet (MIT, ~0.4 GB). Add
+`--with-rmbg2` to also fetch the non-commercial RMBG-2.0 (only needed if you opt in to it).
 
 On a DGX Spark, tell it which image to use (skip this if you already put `GEPPETTO_IMAGE` in `.env`
 in Step 3):
@@ -314,7 +316,9 @@ Useful flags:
 | `--resolution 512\|1024\|1536` | detail; default 1024 |
 | `--texture-size 1024\|2048\|4096` | texture resolution; default 2048 |
 | `--no-preprocess` | skip background removal — for pre-cut RGBA images |
-| `--preview` | also render a turntable MP4 (slow) |
+| `--preview` | also render a turntable MP4 (slow; uses non-commercial nvdiffrast) |
+| `--export-backend open\|nvdiffrast` | texture bake; default is the server's (`open`) |
+| `--matting birefnet\|rmbg2` | background remover; default is the server's (`birefnet`) |
 | `--skip-existing` | resume a batch without redoing finished images |
 | `--seed 12345` | reproduce an exact result |
 
@@ -356,6 +360,58 @@ Interactive docs, with every parameter: **<http://localhost:8080/docs>**
 
 Jobs are written to `outputs/{job_id}/` and survive a restart. Work that was mid-flight when the
 service stopped is marked failed rather than lost silently.
+
+---
+
+## Licence switches
+
+Three components in the stack are licensed for non-commercial use only. Geppetto runs **none of
+them by default**. Each one is a switch. The full register, including what is still an open
+question, is in [docs/LICENSES-MODELS.md](docs/LICENSES-MODELS.md).
+
+| What | Default (no non-commercial code) | Opt-in (non-commercial) | Per request | Server default (`.env`) |
+|---|---|---|---|---|
+| Texture bake | `open`: UV rasterization in plain PyTorch | `nvdiffrast`: upstream's bake | `"export_backend"` | `GEPPETTO_EXPORT_BACKEND` |
+| Background removal | `birefnet`: ZhengPeng7/BiRefNet (MIT) | `rmbg2`: briaai/RMBG-2.0 | `"matting"` | `GEPPETTO_MATTING` |
+| Turntable MP4 | off | `preview_video: true` (nvdiffrast + nvdiffrec) | `"preview_video"` | n/a |
+
+- Both backends export the same mesh, the same UV layout and the same texel values. Only coverage
+  along UV-chart edges can differ, and the seam inpainting fills those texels. Measured differences
+  are in the README's [Licensing](README.md#licensing--what-you-can-actually-do-with-this) section.
+- Background-removal models load **on first use**, not at startup. With `preprocess_image: false`,
+  or an input that already has transparency, none is ever loaded.
+- nvdiffrast stays installed (upstream's `o_voxel` imports it), but its import is deferred: its
+  code runs only on the first job that uses it.
+- Every job reports what it used: `export_backend`, `matting_model` (null if no background removal
+  ran) and `noncommercial_components` (empty means none). `/healthz` adds `noncommercial_loaded`,
+  which lists what has been loaded in the process since it started.
+
+```bash
+# the old behaviour, for one job
+curl -X POST localhost:8080/v1/generate -F image=@photo.jpg \
+  -F 'params={"export_backend":"nvdiffrast","matting":"rmbg2"}'
+```
+
+---
+
+## Tests
+
+The tests need the image and a GPU. `scripts/test.sh` runs them in a throwaway container, against
+the working tree's `server/`, without touching the running service:
+
+```bash
+GPU_ID=1 bash scripts/test.sh
+# also check the open bake against nvdiffrast on a real UV layout
+GPU_ID=1 GEPPETTO_TEST_GLB=outputs/<job>/asset.glb bash scripts/test.sh
+```
+
+To compare backends and matting models on real generations (one mesh per input, exported both ways,
+plus each matting model's cut-out), use a fresh output folder:
+
+```bash
+GPU_ID=1 bash scripts/compare-backends.sh outputs/compare-01 \
+    photo.jpg cutout.png:alpha flat.png:nomatte
+```
 
 ---
 
@@ -500,8 +556,8 @@ so startup does not depend on the token or on the gated grants staying valid.
 
 Expect the archive to be about the size of the volume: safetensors do not compress.
 
-**Licensing.** This is a private backup for the account that accepted the licences. Two of
-the repos are gated and one is CC BY-NC. Do not hand the tarball to anyone else; they need
+**Licensing.** This is a private backup for the account that accepted the licences. DINOv3 is
+gated, and RMBG-2.0 (if you fetched it) is gated and CC BY-NC. Do not hand the tarball to anyone else; they need
 their own approval and their own `scripts/fetch-models.sh` run.
 
 ---
@@ -529,7 +585,7 @@ dictates what works.
 
 - A better photograph beats a higher `resolution` setting almost every time.
 - Cut the background yourself when you can. A pre-cut RGBA PNG with `--no-preprocess` is faster,
-  more predictable, and never loads the non-commercial RMBG-2.0 weights.
+  more predictable, and loads no background-removal model at all.
 - The seed changes the result. The same image at the same settings varies noticeably between runs —
   if one attempt disappoints, run it again before changing anything.
 - Meshes are **not watertight**. For anything structural, expect a repair pass. Your slicer can
