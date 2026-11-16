@@ -361,16 +361,92 @@ service stopped is marked failed rather than lost silently.
 
 ## Using it: from Claude or Copilot
 
-`skills/geppetto/SKILL.md` is an agent skill. Copy it into your skills directory:
+`skills/geppetto/` is an agent skill for terminal agents such as Claude Code. It is two files: the
+`SKILL.md` the agent reads, and `geppetto.py`, a standard-library script that does all the work. The
+agent never has to read this guide or poke at Docker — it runs one command.
+
+Install it once per workstation, after Steps 1–5 have worked at least once:
 
 ```bash
+# Linux, macOS, WSL, Git Bash
 mkdir -p ~/.claude/skills/geppetto
-cp skills/geppetto/SKILL.md ~/.claude/skills/geppetto/
+cp skills/geppetto/SKILL.md skills/geppetto/geppetto.py ~/.claude/skills/geppetto/
 ```
 
-Then ask in plain language — *"turn this photo into something I can print"* — and the agent will
-check the server is healthy, submit the job, wait, and tell you where the files are. Set
-`GEPPETTO_URL` if the server is not on `localhost:8080`.
+```powershell
+# Windows PowerShell
+New-Item -ItemType Directory -Force "$HOME\.claude\skills\geppetto" | Out-Null
+Copy-Item skills\geppetto\SKILL.md, skills\geppetto\geppetto.py "$HOME\.claude\skills\geppetto\"
+```
+
+Then, from the agent, in any directory:
+
+| Command | What happens |
+|---|---|
+| `/geppetto up` | Starts the server if it is not running, waits for the model, opens the web UI |
+| `/geppetto process photo.webp` | Writes `photo.stl` beside the image |
+| `/geppetto process all [dir]` | The same for every image in `dir` (default: the current directory) |
+
+Plain language works too — *"turn this photo into something I can print"* runs `process` on it.
+
+Things worth knowing:
+
+- **Models land next to the image**, same name, right extension: `jeep.webp` → `jeep.stl`.
+- **Nothing is overwritten unless you say `--overwrite`.** A single file whose model already exists
+  is refused before any GPU time is spent; a batch skips those images and converts the rest.
+- **`process` starts the server itself.** It starts the existing `geppetto-api` container, or runs
+  `docker compose up -d api` if there is none yet (set `GEPPETTO_REPO` to this checkout when the
+  skill is installed outside it).
+- **Windows needs no Docker on the Windows side.** When `docker` is not on `PATH` the script calls
+  `wsl -e docker` instead, and reaches the server on `localhost:8080` — which is what the
+  [mirrored networking](#windows--wsl2-only-two-settings-that-matter) setting is for.
+- `--format glb` (repeatable, alongside `stl`, `obj`, `ply`) and `--resolution 512|1024|1536` are
+  there when the defaults — STL at 1024³ — are not what you want.
+- Set `GEPPETTO_URL` if the server is on another machine. The script will use it but cannot start it.
+
+The script is also a perfectly good command on its own:
+
+```bash
+python3 ~/.claude/skills/geppetto/geppetto.py process all ~/photos --format stl --format glb
+```
+
+### A worked example: Windows workstation
+
+Measured on Windows 11 + WSL2 with two RTX 6000 Ada cards, Docker inside WSL only, and the agent
+running in a Windows terminal.
+
+`.env` in the checkout, beyond the token:
+
+```bash
+GPU_ID=1            # GPU 0 drives the displays; generate on the idle card
+HF_HUB_OFFLINE=1    # weights are already in the volume — see the note below
+```
+
+With the container stopped, one request from the agent:
+
+```
+> /geppetto process C:\Users\me\models\jeep.webp
+
+Server not running - starting geppetto-api ...
+Loading the model (about 90 s) .. ready.
+1 image(s) on NVIDIA RTX 6000 Ada Generation, 1024^3 -> stl. A few minutes each.
+[1/1] jeep.webp ... 236s
+    wrote C:\Users\me\models\jeep.stl  (24.2 MB)
+
+1 converted, 0 failed, 0 skipped.
+```
+
+Asking again without `--overwrite` costs nothing:
+
+```
+refusing C:\Users\me\models\jeep.webp: jeep.stl already exists
+Nothing was generated. Pass --overwrite to replace existing models.
+```
+
+> **Set `HF_HUB_OFFLINE=1` once the weights are fetched.** Without it the container checks every
+> weight file against Hugging Face at startup. On this workstation the container could not resolve
+> `huggingface.co`, each check retried for ~25 seconds, and a load that takes seconds was still not
+> finished after six minutes. Nothing errors — it just looks hung.
 
 ---
 

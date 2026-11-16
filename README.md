@@ -27,7 +27,8 @@ two minutes.
 - A **REST API** with a job queue, so long generations do not block anything
 - A **web UI** built into the container — open a page, pick a file, press a button
 - A **CLI client** with no dependencies beyond the standard library
-- An **agent skill** for Claude and Copilot, so "make this printable" works in a chat
+- An **agent skill** for terminal agents — `/geppetto process photo.webp` writes `photo.stl` beside
+  the image, starting the server if it has to
 - **Two containers**, one per hardware target, both built and smoke-tested on real GPUs
 
 Built on **[Microsoft TRELLIS.2](https://github.com/microsoft/TRELLIS.2)** — a single 2D image to a
@@ -547,7 +548,9 @@ Geppetto/
 │   ├── benchmark.py           # measure this machine
 │   ├── make-hero.sh           # regenerate the README banner from a real conversion
 │   └── trellis_client.py      # stdlib-only API client shared by the scripts
-├── skills/geppetto/SKILL.md   # agent skill for Claude / Copilot
+├── skills/geppetto/
+│   ├── SKILL.md               # agent skill: /geppetto up | process <file> | process all [dir]
+│   └── geppetto.py            # stdlib-only script the skill runs; starts the server itself
 ├── HOWTO.md                   # build, install and use — the practical guide
 ├── docs/                      # README artwork
 ├── inputs/                    # drop source images here (gitignored)
