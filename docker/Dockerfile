@@ -6,7 +6,7 @@
 # an ARG, so the targets cannot silently drift apart:
 #
 #   nvidia-cuda  x86_64 / sm_89  / CUDA 12.4 / torch 2.6+cu124  (verified)
-#   dgx-spark    aarch64 / sm_121 / CUDA 13  / torch cu130      (UNVERIFIED)
+#   dgx-spark    aarch64 / sm_121 / CUDA 13  / torch cu130      (verified)
 #
 # Build args for each live in docker/targets/*.args — pass one with
 # `docker build $(sed 's/^/--build-arg /' docker/targets/<target>.args)` or let

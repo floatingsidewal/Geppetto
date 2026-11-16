@@ -528,7 +528,7 @@ Geppetto/
 │   ├── Dockerfile             # one file, both targets — everything variable is a build arg
 │   └── targets/
 │       ├── nvidia-cuda.args   # x86_64 / sm_89 / CUDA 12.4 / flash-attn   (verified)
-│       └── dgx-spark.args     # aarch64 / sm_121 / CUDA 13 / xformers     (unverified)
+│       └── dgx-spark.args     # aarch64 / sm_121 / CUDA 13 / xformers     (verified)
 ├── docker-compose.yml         # api (default) · ui (profile) · api2 (profile: scale)
 ├── .env.example               # HF token, GPU pinning, ports, CORS, upload limit
 ├── server/
@@ -574,7 +574,7 @@ Geppetto/
 - **`sudo` is installed** because upstream's `--basic` step shells out to `sudo apt install libjpeg-dev`, which aborts in a bare container.
 - **`pillow-simd` is pre-satisfied** with a fallback to stock Pillow — it frequently fails to compile, and it is a speed optimization, not a functional dependency.
 - **EGL vendor config is written** so nvdiffrast can create a headless GL context; `NVIDIA_DRIVER_CAPABILITIES=all` exposes graphics, not just compute.
-- **Weights are not baked in.** They live in the `trellis2-models` volume, so rebuilding the image does not re-download the ~21 GB. The volume keeps the name `trellis2-models` from before the rename — renaming it would orphan the weights.
+- **Weights are not baked in.** They live in the `trellis2-models` volume, so rebuilding the image does not re-download the ~21 GB. The volume keeps the name `trellis2-models` from before the rename — renaming it would orphan the weights. HOWTO.md has a backup/restore procedure for the volume, and `HF_HUB_OFFLINE=1` makes a restored host fully independent of Hugging Face.
 
 ## Building and releasing
 

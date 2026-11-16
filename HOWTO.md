@@ -402,6 +402,34 @@ For the unpublished target, building is usually the better answer.
 
 ---
 
+## Backing up and restoring the weights
+
+The ~21 GB in the `trellis2-models` volume is the slow, gated part of setup. Once you have it,
+keep a copy so a new machine, a wiped Docker host, or a revoked Hugging Face grant does not
+mean starting over. A tarball of the volume is the whole thing; the cache uses symlinks and
+`tar` preserves them.
+
+```bash
+# archive, from the machine that has the weights (D = any directory, e.g. a NAS mount)
+D=/mnt/nas/resources/geppetto-weights
+docker run --rm -v trellis2-models:/m:ro -v $D:/out alpine   sh -c 'cd /m && N=trellis2-models-$(date +%F).tar.gz && tar czf /out/$N . && cd /out && sha256sum $N > $N.sha256'
+
+# restore, on any Docker host — no Hugging Face token needed
+docker volume create trellis2-models
+docker run --rm -v trellis2-models:/m -v $D:/in:ro alpine   sh -c 'cd /in && sha256sum -c trellis2-models-<date>.tar.gz.sha256 && cd /m && tar xzf /in/trellis2-models-<date>.tar.gz'
+```
+
+Then set `HF_HUB_OFFLINE=1` in `.env`. The container will never contact Hugging Face again,
+so startup does not depend on the token or on the gated grants staying valid.
+
+Expect the archive to be about the size of the volume: safetensors do not compress.
+
+**Licensing.** This is a private backup for the account that accepted the licences. Two of
+the repos are gated and one is CC BY-NC. Do not hand the tarball to anyone else; they need
+their own approval and their own `scripts/fetch-models.sh` run.
+
+---
+
 ## Getting good results
 
 Geppetto infers 3D from the depth cues in a photograph — shading, occlusion, perspective. That
